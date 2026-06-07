@@ -1,0 +1,9 @@
+If I Rank Your Next 5 High-Leverage Moves
+
+1 Negative keyword bias control
+2 Reddit ingestion
+3 A/B dataset comparison
+4 Policy simulation sandbox
+5 Then — macro trend injection (Exploding Topics / Google Trends API / etc.)
+6 Dashboard localhost binding cleanup
+  Default the Flask dashboard to a safer local URL/port on Mac (for example `127.0.0.1:5001`) because this machine has a port 5000 collision with ControlCenter and `localhost:5000` can render blank even when the app is running.

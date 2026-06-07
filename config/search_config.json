@@ -1,0 +1,47 @@
+{
+  "_comment": "FRONTIER + DISCOVERY corpus for the Mac mini. Generic/task queries surface NEW verticals; frontier/guru queries surface novel automations. Intentionally light on negative keywords so guru content is INCLUDED — use the first_party flag downstream to separate deployed vs pitched.",
+  "queries": [
+    "automate client intake",
+    "automate quoting and estimates",
+    "automate appointment scheduling small business",
+    "automate follow up small business",
+    "automate invoicing small business",
+    "how I automated my business",
+    "small business automation case study",
+    "automation that replaced a task in my business",
+    "business workflow automation real example",
+    "automate my back office",
+    "automate customer onboarding",
+    "automate lead handling small business",
+    "what I automated in my business this year",
+    "automation that saved my business hours",
+    "n8n real business workflow",
+    "make.com real business workflow",
+    "automate document processing business",
+    "automate reporting small business",
+
+    "AI automation you have never seen",
+    "advanced n8n workflow",
+    "advanced make.com automation",
+    "I built an AI agent that",
+    "crazy AI automation",
+    "insane AI automation workflow",
+    "AI automation nobody is talking about",
+    "weird AI automation business",
+    "most powerful AI automation",
+    "AI agent does my whole job",
+    "I replaced my team with AI agents",
+    "AI automation business breakdown",
+    "next level AI automation",
+    "AI agents real business use case",
+    "building AI agents for business",
+    "advanced AI automation tutorial",
+    "AI automation that actually makes money",
+    "full AI automation system walkthrough"
+  ],
+  "negative_keywords": [
+    "gaming",
+    "music video"
+  ],
+  "channels": []
+}

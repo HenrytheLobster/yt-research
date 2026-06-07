@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Automations People Are Teaching</title>
+  <style>
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+    body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#0f1117;color:#e2e8f0;min-height:100vh;padding:24px;}
+    .page-header{display:flex;align-items:baseline;gap:12px;margin-bottom:6px;flex-wrap:wrap;}
+    h1{font-size:1.5rem;font-weight:700;color:#f8fafc;}
+    .badge{font-size:.7rem;font-weight:600;background:#1e40af;color:#bfdbfe;padding:2px 8px;border-radius:9999px;letter-spacing:.05em;}
+    .meta{font-size:.8rem;color:#64748b;margin-bottom:20px;}
+    .meta span{margin-right:16px;}
+    .intro{font-size:.85rem;color:#94a3b8;max-width:760px;line-height:1.55;margin-bottom:22px;}
+    .legend{display:flex;gap:18px;flex-wrap:wrap;margin-bottom:20px;font-size:.75rem;color:#94a3b8;}
+    .legend b{color:#e2e8f0;font-weight:600;}
+    .tag{display:inline-block;font-size:.62rem;font-weight:700;letter-spacing:.05em;padding:2px 7px;border-radius:9999px;text-transform:uppercase;vertical-align:middle;}
+    .tag-idea{background:#3b1d5f;color:#d8b4fe;}
+    .tag-white{background:#063b3a;color:#5eead4;}
+    .controls{margin-bottom:16px;}
+    .controls button{background:#1e2130;border:1px solid #2d3550;color:#cbd5e1;font-size:.78rem;padding:6px 12px;border-radius:8px;cursor:pointer;margin-right:8px;}
+    .controls button.active{background:#1e3a5f;border-color:#3b6ea5;color:#bfdbfe;}
+    .cat{background:#1a1d2b;border:1px solid #2d3550;border-radius:12px;margin-bottom:12px;overflow:hidden;}
+    .cat-head{display:flex;align-items:center;gap:14px;padding:14px 18px;cursor:pointer;}
+    .cat-head:hover{background:#1f2435;}
+    .rank{font-size:.8rem;color:#475569;font-family:monospace;width:24px;flex-shrink:0;}
+    .cat-main{flex:1;min-width:0;}
+    .cat-name{font-weight:600;color:#f1f5f9;font-size:.98rem;}
+    .cat-desc{font-size:.76rem;color:#64748b;margin-top:2px;}
+    .bar-wrap{flex:1.4;max-width:320px;display:flex;align-items:center;gap:10px;}
+    .bar-track{flex:1;height:10px;background:#11131c;border-radius:6px;overflow:hidden;}
+    .bar-fill{height:100%;background:linear-gradient(90deg,#2563eb,#60a5fa);border-radius:6px;}
+    .bar-fill.idea{background:linear-gradient(90deg,#7c3aed,#c084fc);}
+    .count{font-weight:700;color:#f8fafc;font-size:1.05rem;min-width:64px;text-align:right;}
+    .count small{font-size:.66rem;color:#64748b;font-weight:500;display:block;margin-top:-2px;}
+    .cat-body{display:none;padding:4px 18px 18px 56px;border-top:1px solid #232838;}
+    .cat.open .cat-body{display:block;}
+    .chips{margin:12px 0 6px;}
+    .chip{display:inline-block;background:#11243a;color:#93c5fd;font-size:.72rem;padding:3px 9px;border-radius:9999px;margin:0 6px 6px 0;}
+    .chip .n{color:#475569;margin-left:4px;}
+    .ex{border-left:2px solid #2d3550;padding:8px 0 8px 12px;margin:10px 0;}
+    .ex-name{font-weight:600;color:#e2e8f0;font-size:.82rem;}
+    .ex-desc{font-size:.76rem;color:#94a3b8;margin:3px 0;line-height:1.45;}
+    .ex-quote{font-size:.75rem;color:#7dd3fc;font-style:italic;line-height:1.45;}
+    .ex-src{font-size:.68rem;color:#475569;margin-top:3px;}
+    .ex-src a{color:#64748b;text-decoration:none;}
+    .ex-src a:hover{color:#93c5fd;text-decoration:underline;}
+    .sub-label{font-size:.66rem;color:#475569;text-transform:uppercase;letter-spacing:.07em;margin-top:10px;}
+    .empty{color:#475569;font-size:.85rem;padding:40px;text-align:center;}
+  </style>
+</head>
+<body>
+  <div class="page-header">
+    <h1>Automations People Are Teaching</h1>
+    <span class="badge" id="model">—</span>
+  </div>
+  <p class="meta">
+    <span id="metaVideos">—</span>
+    <span id="metaDate">—</span>
+  </p>
+  <p class="intro">
+    A breadth survey of what AI-automation creators actually walk through on YouTube. The bar is
+    <b>how many distinct videos teach each category</b> — a measure of how much attention a tactic gets,
+    not a recommendation. Click any row to see the common tools and real example builds (with quotes + source).
+  </p>
+  <div class="legend">
+    <span><span class="tag tag-idea">Your idea</span> a category you flagged to watch</span>
+    <span><span class="tag tag-white">Whitespace</span> few people teach it — possible differentiation</span>
+  </div>
+
+  <div class="controls">
+    <button id="fAll" class="active" onclick="setFilter('all')">All categories</button>
+    <button id="fIdea" onclick="setFilter('idea')">My ideas only</button>
+    <button id="fWhite" onclick="setFilter('white')">Whitespace (&lt;10)</button>
+    <button onclick="toggleAll(true)">Expand all</button>
+    <button onclick="toggleAll(false)">Collapse all</button>
+  </div>
+
+  <div id="list"><div class="empty">Loading taxonomy…</div></div>
+
+  <script src="data/automations_taxonomy.js"></script>
+  <script>
+    const WHITESPACE_MAX = 10;
+    let DATA = window.TAXONOMY || null;
+    let filter = "all";
+
+    function vidLink(id){ return id ? `https://youtu.be/${id}` : null; }
+
+    function render(){
+      const list = document.getElementById("list");
+      if(!DATA || !DATA.categories){ list.innerHTML = `<div class="empty">No data. Run <code>python build_taxonomy.py</code> first.</div>`; return; }
+      document.getElementById("model").textContent = DATA.model || "—";
+      document.getElementById("metaVideos").textContent = `${DATA.total_videos} videos analyzed`;
+      document.getElementById("metaDate").textContent = `Generated: ${(DATA.generated_at||"").slice(0,10)}`;
+      const max = Math.max(...DATA.categories.map(c=>c.video_count), 1);
+
+      const cats = DATA.categories.filter(c=>{
+        if(filter==="idea") return c.watch;
+        if(filter==="white") return c.video_count < WHITESPACE_MAX;
+        return true;
+      });
+
+      list.innerHTML = cats.map((c,i)=>{
+        const isWhite = c.video_count < WHITESPACE_MAX;
+        const tags = `${c.watch?'<span class="tag tag-idea">Your idea</span> ':''}${isWhite?'<span class="tag tag-white">Whitespace</span>':''}`;
+        const tools = (c.top_tools||[]).map(t=>`<span class="chip">${t.tool}<span class="n">×${t.n}</span></span>`).join("") || '<span style="color:#475569;font-size:.75rem">no tools named</span>';
+        const ex = (c.examples||[]).map(e=>{
+          const link = vidLink(e.video_id);
+          const src = link ? `<a href="${link}" target="_blank">${e.source}</a>` : e.source;
+          return `<div class="ex">
+            <div class="ex-name">${e.name}</div>
+            <div class="ex-desc">${e.desc}</div>
+            <div class="ex-quote">“${e.quote}”</div>
+            <div class="ex-src">— ${src}</div>
+          </div>`;
+        }).join("") || '<div style="color:#475569;font-size:.78rem;margin-top:8px">No detailed examples captured yet.</div>';
+        return `<div class="cat" data-key="${c.key}">
+          <div class="cat-head" onclick="this.parentNode.classList.toggle('open')">
+            <div class="rank">${String(i+1).padStart(2,'0')}</div>
+            <div class="cat-main">
+              <div class="cat-name">${c.name} ${tags}</div>
+              <div class="cat-desc">${c.desc}</div>
+            </div>
+            <div class="bar-wrap">
+              <div class="bar-track"><div class="bar-fill ${c.watch?'idea':''}" style="width:${Math.round(c.video_count/max*100)}%"></div></div>
+            </div>
+            <div class="count">${c.video_count}<small>videos</small></div>
+          </div>
+          <div class="cat-body">
+            <div class="sub-label">Tools most often named</div>
+            <div class="chips">${tools}</div>
+            <div class="sub-label">Example builds</div>
+            ${ex}
+          </div>
+        </div>`;
+      }).join("");
+    }
+    function setFilter(f){
+      filter=f;
+      ["fAll","fIdea","fWhite"].forEach(id=>document.getElementById(id).classList.remove("active"));
+      document.getElementById({all:"fAll",idea:"fIdea",white:"fWhite"}[f]).classList.add("active");
+      render();
+    }
+    function toggleAll(open){ document.querySelectorAll(".cat").forEach(c=>c.classList.toggle("open",open)); }
+    render();
+  </script>
+</body>
+</html>
