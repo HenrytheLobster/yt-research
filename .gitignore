@@ -19,6 +19,9 @@ data/
 reports/report_*.md
 Slides/
 
+# Local backups
+Working youtube research v1.zip
+
 # Generated config
 config/scoring_policy.json
 

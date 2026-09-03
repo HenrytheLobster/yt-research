@@ -48,6 +48,11 @@ ollama pull phi3:mini
 ollama serve
 ```
 
+### 4. Configure optional credentials
+
+Copy `.env.example` to `.env` if you want to use Gemini or Reddit collection. Keep `.env` local; it is intentionally ignored by Git.
+
+
 ---
 
 ## Usage
