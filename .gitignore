@@ -17,6 +17,9 @@ venv/
 # Runtime outputs
 data/
 reports/report_*.md
+reports/pseo_local_review.md
+reports/channel_analysis_*.md
+reports/search_corpus_*.md
 Slides/
 
 # Local backups
