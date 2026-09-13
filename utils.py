@@ -19,8 +19,10 @@ Install:
 """
 
 import json
+import os
 import subprocess
 import sys
+import tempfile
 import time
 import requests
 from datetime import datetime
@@ -39,7 +41,10 @@ QUEUE_DIR = DATA_DIR / "queue"
 PENDING_FILE = QUEUE_DIR / "pending.jsonl"
 LOCK_FILE = QUEUE_DIR / "pending.lock"
 
-OLLAMA_URL = "http://localhost:11434/api/generate"
+OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434/api/generate")
+GEMINI_API_BASE = os.environ.get(
+    "GEMINI_API_BASE", "https://generativelanguage.googleapis.com/v1beta"
+)
 
 YTDLP_RETRIES = 3
 YTDLP_BACKOFF = [2, 8, 20]
@@ -226,6 +231,41 @@ def run_ytdlp(
     raise AgentError(f"{label} failed after {retries+1} attempts: {last_exc}")
 
 
+# ─── LLM provider routing ─────────────────────────────────────────────────────
+
+def current_llm_provider() -> str:
+    """Return the active provider, defaulting to Ollama for backward compatibility."""
+    return os.environ.get("LLM_PROVIDER", "ollama").strip().lower()
+
+
+def infer_llm_provider(model: str, provider: str | None = None) -> str:
+    """
+    Choose a provider using explicit override first, then model naming, then env.
+    This keeps the project flexible: model strings like gemini-* auto-route even
+    if the caller forgets to set LLM_PROVIDER.
+    """
+    if provider:
+        return provider.strip().lower()
+    lowered = model.strip().lower()
+    if lowered.startswith("claude:"):
+        return "claude"
+    if lowered.startswith("codex:"):
+        return "codex"
+    if lowered.startswith("gemini"):
+        return "gemini"
+    return current_llm_provider()
+
+
+def llm_model_name(model: str) -> str:
+    """Strip provider prefixes used by CLI-backed models."""
+    if ":" not in model:
+        return model
+    provider, name = model.split(":", 1)
+    if provider.lower() in {"claude", "codex"}:
+        return name
+    return model
+
+
 # ─── Ollama with retry ────────────────────────────────────────────────────────
 
 def call_ollama(
@@ -272,6 +312,221 @@ def call_ollama(
                 time.sleep(wait)
 
     raise AgentError(f"Ollama {model} failed after {retries+1} attempts: {last_exc}")
+
+
+def call_gemini(
+    prompt: str,
+    model: str,
+    timeout: int = 300,
+    options: dict | None = None,
+    retries: int = OLLAMA_RETRIES,
+    backoff: list[int] | None = None,
+) -> str:
+    """
+    Call the direct Gemini REST API using GOOGLE_API_KEY or GEMINI_API_KEY.
+    Uses the same retry behavior as the Ollama path so callers do not care
+    which provider is active.
+    """
+    api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        raise AgentError(
+            "Gemini provider selected but no GOOGLE_API_KEY or GEMINI_API_KEY is set."
+        )
+
+    backoff = backoff or OLLAMA_BACKOFF
+    generation_config: dict = {}
+    if options:
+        if "temperature" in options:
+            generation_config["temperature"] = options["temperature"]
+        if "max_output_tokens" in options:
+            generation_config["maxOutputTokens"] = options["max_output_tokens"]
+
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+    }
+    if generation_config:
+        payload["generationConfig"] = generation_config
+
+    url = f"{GEMINI_API_BASE}/models/{model}:generateContent?key={api_key}"
+    last_exc: Exception | None = None
+
+    for attempt in range(retries + 1):
+        try:
+            resp = requests.post(url, json=payload, timeout=timeout)
+            resp.raise_for_status()
+            data = resp.json()
+            candidates = data.get("candidates") or []
+            if not candidates:
+                raise ValueError("Gemini returned no candidates")
+            parts = candidates[0].get("content", {}).get("parts", [])
+            text = "".join(part.get("text", "") for part in parts).strip()
+            if not text:
+                raise ValueError("Gemini returned an empty response")
+            return text
+        except requests.HTTPError as e:
+            detail = ""
+            if e.response is not None:
+                body = (e.response.text or "").strip().replace("\n", " ")
+                detail = f" status={e.response.status_code}"
+                if body:
+                    detail += f" body={body[:300]}"
+            last_exc = RuntimeError(f"{type(e).__name__}:{detail}" if detail else str(e))
+            if attempt < retries:
+                wait = backoff[min(attempt, len(backoff) - 1)]
+                print(f"    ⚠️  Gemini {model} attempt {attempt+1}/{retries+1}: "
+                      f"{last_exc}. Retrying in {wait}s...")
+                time.sleep(wait)
+        except (requests.RequestException, KeyError, ValueError) as e:
+            last_exc = e
+            if attempt < retries:
+                wait = backoff[min(attempt, len(backoff) - 1)]
+                print(f"    ⚠️  Gemini {model} attempt {attempt+1}/{retries+1}: "
+                      f"{type(e).__name__}. Retrying in {wait}s...")
+                time.sleep(wait)
+
+    raise AgentError(f"Gemini {model} failed after {retries+1} attempts: {last_exc}")
+
+
+def call_claude_cli(
+    prompt: str,
+    model: str,
+    timeout: int = 300,
+    retries: int = OLLAMA_RETRIES,
+    backoff: list[int] | None = None,
+) -> str:
+    """Call Claude Code in print mode with tools disabled."""
+    backoff = backoff or OLLAMA_BACKOFF
+    model_name = llm_model_name(model)
+    cmd = [
+        "claude", "-p",
+        "--model", model_name,
+        "--output-format", "text",
+        "--permission-mode", "dontAsk",
+        "--tools", "",
+        "--no-session-persistence",
+    ]
+    last_exc: Exception | None = None
+    for attempt in range(retries + 1):
+        try:
+            result = subprocess.run(
+                cmd,
+                input=prompt,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=ROOT,
+            )
+            if result.returncode != 0:
+                raise RuntimeError((result.stderr or result.stdout or "").strip()[:500])
+            return result.stdout.strip()
+        except (subprocess.TimeoutExpired, RuntimeError, OSError) as e:
+            last_exc = e
+            if attempt < retries:
+                wait = backoff[min(attempt, len(backoff) - 1)]
+                print(f"    ⚠️  Claude CLI {model_name} attempt {attempt+1}/{retries+1}: "
+                      f"{type(e).__name__}. Retrying in {wait}s...")
+                time.sleep(wait)
+    raise AgentError(f"Claude CLI {model_name} failed after {retries+1} attempts: {last_exc}")
+
+
+def call_codex_cli(
+    prompt: str,
+    model: str,
+    timeout: int = 300,
+    retries: int = OLLAMA_RETRIES,
+    backoff: list[int] | None = None,
+) -> str:
+    """Call Codex CLI non-interactively and return its final message."""
+    backoff = backoff or OLLAMA_BACKOFF
+    model_name = llm_model_name(model)
+    last_exc: Exception | None = None
+    for attempt in range(retries + 1):
+        output_path = None
+        try:
+            with tempfile.NamedTemporaryFile("w+", suffix=".txt", delete=False) as out:
+                output_path = out.name
+            cmd = [
+                "codex", "exec",
+                "-m", model_name,
+                "--sandbox", "read-only",
+                "--ask-for-approval", "never",
+                "--skip-git-repo-check",
+                "--ephemeral",
+                "--output-last-message", output_path,
+                "-",
+            ]
+            result = subprocess.run(
+                cmd,
+                input=prompt,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=ROOT,
+            )
+            if result.returncode != 0:
+                raise RuntimeError((result.stderr or result.stdout or "").strip()[:500])
+            text = Path(output_path).read_text(encoding="utf-8").strip()
+            return text or result.stdout.strip()
+        except (subprocess.TimeoutExpired, RuntimeError, OSError) as e:
+            last_exc = e
+            if attempt < retries:
+                wait = backoff[min(attempt, len(backoff) - 1)]
+                print(f"    ⚠️  Codex CLI {model_name} attempt {attempt+1}/{retries+1}: "
+                      f"{type(e).__name__}. Retrying in {wait}s...")
+                time.sleep(wait)
+        finally:
+            if output_path:
+                try:
+                    Path(output_path).unlink()
+                except OSError:
+                    pass
+    raise AgentError(f"Codex CLI {model_name} failed after {retries+1} attempts: {last_exc}")
+
+
+def call_llm(
+    prompt: str,
+    model: str,
+    timeout: int = 300,
+    options: dict | None = None,
+    retries: int = OLLAMA_RETRIES,
+    backoff: list[int] | None = None,
+    provider: str | None = None,
+) -> str:
+    """Provider-agnostic LLM entrypoint used by triage, extract, and repair."""
+    resolved = infer_llm_provider(model=model, provider=provider)
+    if resolved == "claude":
+        return call_claude_cli(
+            prompt,
+            model=model,
+            timeout=timeout,
+            retries=retries,
+            backoff=backoff,
+        )
+    if resolved == "codex":
+        return call_codex_cli(
+            prompt,
+            model=model,
+            timeout=timeout,
+            retries=retries,
+            backoff=backoff,
+        )
+    if resolved == "gemini":
+        return call_gemini(
+            prompt,
+            model=model,
+            timeout=timeout,
+            options=options,
+            retries=retries,
+            backoff=backoff,
+        )
+    return call_ollama(
+        prompt,
+        model=model,
+        timeout=timeout,
+        options=options,
+        retries=retries,
+        backoff=backoff,
+    )
 
 
 # ─── quote enforcement ────────────────────────────────────────────────────────

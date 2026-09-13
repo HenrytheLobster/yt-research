@@ -1,5 +1,32 @@
 # KDP YouTube Research Agent
 
+## Programmatic SEO research run
+
+Use the text menu for programmatic SEO runs:
+
+```bash
+./research
+```
+
+The menu shows the last run keywords and the saved config keywords, offers to
+delete prior pSEO transcripts/cache/report files, detects local Ollama models
+and low-cost CLI models, then runs the selected steps. When discovery is part
+of the run, it can also ask the selected model to generate keyword ideas from a
+seed topic. Keywords entered in the menu apply only to that run; broad negative
+keywords still come from
+`config/search_config.json`.
+
+For automation, the worker script still accepts direct flags:
+
+```bash
+.venv/bin/python -u research_pseo.py --discover --collect --analyze --report --model gemma4:12b --max-videos 8 --query "programmatic SEO best practices case study"
+```
+
+The run prints progress during each model segment and can be resumed after an
+interruption; completed segments are cached in `data/pseo/`. Collected
+transcripts are stored in `data/youtube/raw/`, and the source-quoted review is
+written to `reports/pseo_local_review.md`.
+
 An autonomous system that watches YouTube for KDP topic research tutorials,
 extracts structured knowledge, and feeds scoring rules back into your
 Kindle topic discovery pipeline.
