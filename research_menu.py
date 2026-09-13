@@ -225,6 +225,19 @@ def choose_count() -> int:
         print("Please enter a positive number.")
 
 
+def choose_timeout() -> int:
+    while True:
+        value = prompt("Seconds to allow each analysis segment before skipping that video", "900")
+        try:
+            timeout = int(value)
+        except ValueError:
+            print("Please enter a whole number.")
+            continue
+        if timeout > 0:
+            return timeout
+        print("Please enter a positive number.")
+
+
 def generate_keyword_ideas(model: str, negative_keywords: list[str]) -> list[str]:
     seed = prompt("Seed topic for keyword ideas", "programmatic SEO best practices")
     prompt_text = f"""Generate YouTube search queries for a transcript research run.
@@ -292,13 +305,22 @@ def choose_keywords(model: str, negative_keywords: list[str]) -> list[str]:
         print("Please enter at least one keyword query.")
 
 
-def build_command(model: str, steps: list[str], count: int, queries: list[str], negatives: list[str]) -> list[str]:
+def build_command(
+    model: str,
+    steps: list[str],
+    count: int,
+    queries: list[str],
+    negatives: list[str],
+    analysis_timeout: int = 900,
+) -> list[str]:
     cmd = [sys.executable, "-u", str(ROOT / "research_pseo.py")]
     for step in steps:
         cmd.append(f"--{step}")
     if not any(step in steps for step in ["discover", "collect"]):
         cmd.append("--use-latest-ids")
     cmd += ["--model", model]
+    if "analyze" in steps:
+        cmd += ["--analysis-timeout", str(analysis_timeout)]
     if count:
         cmd += ["--max-videos", str(count)]
     if "discover" in steps:
@@ -328,6 +350,7 @@ def main() -> None:
     if not steps:
         raise SystemExit("No steps selected.")
     count = choose_count() if any(step in steps for step in ["discover", "collect"]) else 0
+    analysis_timeout = choose_timeout() if "analyze" in steps else 900
     _, _, negatives = previous_keywords()
     queries = choose_keywords(model, negatives) if "discover" in steps else []
 
@@ -336,13 +359,15 @@ def main() -> None:
     print(f"  Model: {model}")
     if count:
         print(f"  Max videos: {count}")
+    if "analyze" in steps:
+        print(f"  Analysis timeout: {analysis_timeout}s per segment")
     if queries:
         print(f"  Queries: {'; '.join(queries)}")
     if negatives and "discover" in steps:
         print(f"  Negative keywords: {', '.join(negatives)}")
     print("")
 
-    cmd = build_command(model, steps, count, queries, negatives)
+    cmd = build_command(model, steps, count, queries, negatives, analysis_timeout)
     completed = subprocess.run(cmd, cwd=ROOT)
     raise SystemExit(completed.returncode)
 

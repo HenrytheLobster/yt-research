@@ -8,7 +8,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from utils import call_llm
+from utils import AgentError, call_llm
 
 
 ROOT = Path(__file__).parent
@@ -120,7 +120,7 @@ def quote_in_transcript(quote: str, transcript: str) -> bool:
                for i in range(len(haystack) - len(needle) + 1))
 
 
-def extract(video_id: str, model: str) -> dict:
+def extract(video_id: str, model: str, timeout: int = 900) -> dict:
     folder = RAW / video_id
     meta = json.loads((folder / "meta.json").read_text(encoding="utf-8"))
     transcript = (folder / "transcript.txt").read_text(encoding="utf-8")
@@ -156,8 +156,22 @@ Transcript segment:
             monitor = threading.Thread(target=heartbeat, daemon=True)
             monitor.start()
             try:
-                response = call_llm(prompt, model=model, timeout=900,
+                response = call_llm(prompt, model=model, timeout=timeout,
                                     retries=0, options={"temperature": 0.1, "num_ctx": 16384})
+            except AgentError as exc:
+                elapsed = time.monotonic() - started
+                print(f"{video_id}: segment {number}/{len(segments)} failed after "
+                      f"{elapsed:.0f}s: {exc}", flush=True)
+                return {
+                    "video_id": video_id,
+                    "model": model,
+                    "meta": meta,
+                    "segments": len(segments),
+                    "findings": findings,
+                    "rejected": rejected,
+                    "error": str(exc),
+                    "failed_segment": number,
+                }
             finally:
                 stop_heartbeat.set()
                 monitor.join(timeout=1)
@@ -182,6 +196,8 @@ def write_report(results: list[dict], model: str) -> None:
         meta = result["meta"]
         lines += [f"## [{meta.get('title', result['video_id'])}]({meta.get('url', 'https://www.youtube.com/watch?v=' + result['video_id'])})", "",
                   f"Channel: {meta.get('channel', 'unknown')} · Published: {meta.get('publish_date', 'unknown')} · Verified observations: {len(result['findings'])}", ""]
+        if result.get("error"):
+            lines += [f"- Analysis stopped at segment {result.get('failed_segment', '?')}: `{result['error']}`", ""]
         for item in result["findings"]:
             lines += [f"- **{item.get('type', 'claim')}:** {item.get('claim', '')}",
                       f"  - Transcript: “{item['quote']}”"]
@@ -197,7 +213,7 @@ def write_report(results: list[dict], model: str) -> None:
     REPORT.write_text("\n".join(lines), encoding="utf-8")
 
 
-def analyze_video_ids(video_ids: list[str], model: str) -> list[dict]:
+def analyze_video_ids(video_ids: list[str], model: str, timeout: int = 900) -> list[dict]:
     results = []
     for video_id in video_ids:
         path = result_path(video_id, model)
@@ -205,7 +221,7 @@ def analyze_video_ids(video_ids: list[str], model: str) -> list[dict]:
             print(f"{video_id}: cached at {path}", flush=True)
             result = json.loads(path.read_text(encoding="utf-8"))
         else:
-            result = extract(video_id, model)
+            result = extract(video_id, model, timeout=timeout)
             path.write_text(json.dumps(result, indent=2), encoding="utf-8")
         print(f"{video_id}: {len(result['findings'])} verified quotes, "
               f"{len(result['rejected'])} rejected", flush=True)
@@ -256,6 +272,7 @@ def main() -> None:
     parser.add_argument("--negative-keyword", action="append", dest="negative_keywords", help="Negative keyword filter for this run; may be repeated")
     parser.add_argument("--max-per-query", type=int, default=5)
     parser.add_argument("--max-videos", type=int, default=8)
+    parser.add_argument("--analysis-timeout", type=int, default=900, help="Seconds to allow each model segment before recording a failed video and continuing")
     args = parser.parse_args()
     OUT.mkdir(parents=True, exist_ok=True)
 
@@ -290,7 +307,7 @@ def main() -> None:
     if args.analyze:
         if not video_ids:
             raise SystemExit("No collected video transcripts are available to analyze")
-        results = analyze_video_ids(video_ids, args.model)
+        results = analyze_video_ids(video_ids, args.model, timeout=args.analysis_timeout)
 
     if args.report:
         if not results:
