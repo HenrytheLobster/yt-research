@@ -1,9 +1,15 @@
 """
-run_agent.py — Master Orchestrator  (v2)
+run_agent.py — Master Orchestrator  (v3)
 =========================================
-Runs the full KDP YouTube Research Agent pipeline.
+Runs the full YouTube Research Agent pipeline on whatever topic you configure
+in config/search_config.json (or pass with --topic / --query) — it is not tied
+to any one subject.
 
-Changes from v1:
+Changes from v2:
+- --topic threads a plain-language research topic through triage + extraction
+  prompts instead of a hardcoded domain
+- --channel: collect directly from a channel's uploads page, bypassing queue-
+  based discover/triage
 - --max passed consistently to all stages (including triage)
 - --reprocess VIDEO_ID: re-run collect+extract+merge for one video
 - Quarantine folder shown in status report
@@ -11,7 +17,7 @@ Changes from v1:
 - Clean state machine statuses across all modes
 
 Modes:
-    discover   — Find new KDP videos
+    discover   — Find new relevant videos
     collect    — Download transcripts
     triage     — Filter with phi3:mini
     extract    — Extract structured knowledge
@@ -23,7 +29,9 @@ Modes:
 
 Usage:
     python run_agent.py --mode full
+    python run_agent.py --mode full --topic "AI automation for small businesses"
     python run_agent.py --mode collect --max 5
+    python run_agent.py --mode collect --channel https://www.youtube.com/@somechannel
     python run_agent.py --mode status
     python run_agent.py --mode full --reprocess VIDEO_ID
     python run_agent.py --mode discover --dry-run
@@ -93,7 +101,7 @@ def load_knowledge(section: str) -> list[dict]:
 
 def run_status():
     print("\n" + "=" * 56)
-    print("  KDP RESEARCH AGENT — STATUS")
+    print("  YOUTUBE RESEARCH AGENT — STATUS")
     print("=" * 56)
 
     entries = load_pending()
@@ -152,7 +160,7 @@ def run_report():
         status_counts[s] = status_counts.get(s, 0) + 1
 
     lines = [
-        "# KDP Research Agent — Daily Report",
+        "# YouTube Research Agent — Daily Report",
         f"**Generated:** {iso_now()}",
         "",
         "## Pipeline Status",
@@ -252,6 +260,14 @@ def run_discover(args):
 
 
 def run_collect(args):
+    # Direct channel collect bypasses queue-based discover/triage and just pulls transcripts.
+    if getattr(args, "channel", None):
+        from youtube_collect import collect_channel
+        workers = getattr(args, "workers", None)
+        workers = 3 if workers is None else workers
+        collect_channel(args.channel, max_videos=args.max, workers=workers)
+        return
+
     # Single-video reprocess stays serial.
     if getattr(args, "reprocess", None):
         from youtube_collect import collect
@@ -269,20 +285,31 @@ def run_collect(args):
 
 
 def run_triage(args):
-    from triage import triage_all
-    triage_all(max_videos=args.max)   # ← now honors --max
+    # Parallel triage matters most on machines with a fast GPU but tighter RAM
+    # (e.g. a discrete-GPU Windows box) — keep it as an option, not force it.
+    workers = getattr(args, "triage_workers", None)
+    workers = getattr(args, "workers", None) if workers is None else workers
+    workers = 4 if workers is None else workers
+    topic = getattr(args, "topic", None)
+    if workers > 1:
+        from parallel_triage import run_parallel_triage
+        run_parallel_triage(workers=workers, total=args.max, topic=topic)
+    else:
+        from triage import triage_all
+        triage_all(max_videos=args.max, topic=topic)
 
 
 def run_extract(args):
     workers = getattr(args, "workers", None)
     workers = 3 if workers is None else workers
+    topic = getattr(args, "topic", None)
     if workers > 1:
         # Parallel extraction is the default (extract is the slowest stage).
         from parallel_extract import run_parallel
-        run_parallel(workers=workers, total=args.max)
+        run_parallel(workers=workers, total=args.max, topic=topic)
     else:
         from extract import extract_all
-        extract_all(max_videos=args.max)
+        extract_all(max_videos=args.max, topic=topic)
 
 
 def run_merge(args):
@@ -299,7 +326,7 @@ def run_full(args):
     dry_run = getattr(args, "dry_run", False)
     if dry_run:
         print("\n" + "=" * 56)
-        print("  KDP RESEARCH AGENT — DRY RUN (no writes)")
+        print("  YOUTUBE RESEARCH AGENT — DRY RUN (no writes)")
         print("=" * 56 + "\n")
         # Dry-run: only discover (prints what would be queued) + status
         run_discover(args)
@@ -308,7 +335,7 @@ def run_full(args):
         return
 
     print("\n" + "=" * 56)
-    print("  KDP RESEARCH AGENT — FULL PIPELINE")
+    print("  YOUTUBE RESEARCH AGENT — FULL PIPELINE")
     print(f"  Started: {iso_now()}")
     print("=" * 56 + "\n")
 
@@ -427,7 +454,7 @@ def run_reddit_full(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="KDP YouTube Research Agent",
+        description="YouTube Research Agent — research any topic from YouTube transcripts",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -447,7 +474,10 @@ Examples:
     parser.add_argument("--workers", type=int, default=None,
                         help="Parallel extraction workers (default 3; use 1 for single-threaded)")
     parser.add_argument("--query", help="Override discovery queries")
-    parser.add_argument("--subreddits", help="Reddit: comma-separated list, e.g. KDP,selfpublish")
+    parser.add_argument("--channel", help="Collect directly from a YouTube channel uploads page")
+    parser.add_argument("--topic", help="Plain-language research topic for triage/extraction prompts "
+                                         "(falls back to RESEARCH_TOPIC env var, then config/search_config.json)")
+    parser.add_argument("--subreddits", help="Reddit (legacy/reddit): comma-separated list")
     parser.add_argument("--reprocess", metavar="VIDEO_ID",
                         help="Force reprocess a specific video through collect+extract+merge")
     parser.add_argument("--reset", action="store_true", help="Reset knowledge base")

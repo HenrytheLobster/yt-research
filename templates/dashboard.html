@@ -500,10 +500,22 @@
     <button class="btn btn-stage" onclick="runStage('extract')">⚙️ Extract</button>
     <button class="btn btn-parallel" onclick="runStage('extract-parallel')" title="Run 3 workers in parallel — faster, uses more GPU">⚙️×3 Parallel</button>
     <button class="btn btn-stage" onclick="runStage('merge')">🔗 Merge</button>
-    <button class="btn btn-stage" onclick="runStage('policy')">📋 Policy</button>
-    <button class="btn btn-full"  onclick="runStage('full')" title="Runs the full pipeline with 2 workers on this Mac mini">▶ Full Run (2 workers)</button>
+    <button class="btn btn-stage" onclick="runStage('build-taxonomy')" title="Aggregate all extractions into the automations taxonomy (breadth / popularity)">🧩 Build Taxonomy</button>
+    <button class="btn btn-stage" onclick="runStage('build-frontier')" title="Cluster extractions by novelty + operator-evidence into the frontier board (the discovery view)">🛰 Frontier Board</button>
+    <button class="btn btn-full"  onclick="runStage('full')">▶ Full Run</button>
     <button class="btn btn-stop"  onclick="stopRun()" id="stopBtn">⏹ Stop</button>
     <span class="run-status" id="runStatus">Idle</span>
+  </div>
+
+  <!-- Extraction model selector -->
+  <div class="pipeline-bar" style="margin-top:-16px">
+    <span class="pipeline-label">Extraction model:</span>
+    <select id="modelSelect" style="background:#0f1117;color:#e2e8f0;border:1px solid #2d3550;border-radius:6px;padding:6px 12px;font-size:0.8rem;font-weight:600;cursor:pointer">
+      <option value="qwen3:8b">qwen3:8b — local GPU (slow, free)</option>
+      <option value="qwen3.5:cloud">qwen3.5:cloud — Ollama Cloud (fast)</option>
+      <option value="gemini-3.5-flash">gemini-3.5-flash — Gemini API (fast, needs key)</option>
+    </select>
+    <span style="font-size:0.72rem;color:#475569">applies to Extract / Full Run · cloud models need sign-in or an API key in the server env</span>
   </div>
 
   <!-- Live Run Log -->
@@ -597,6 +609,27 @@
     <div class="q-chip"><span class="q-count" id="qFailed">—</span><span class="q-label">failed</span></div>
   </div>
 
+  <!-- Frontier Board (build_frontier_board.py output) -->
+  <div class="section-title">🛰 Frontier Board — Novel &amp; Operator-Backed Automations
+    <span id="frontierMeta" style="font-weight:400;text-transform:none;letter-spacing:0;color:#475569"></span>
+  </div>
+  <div style="font-size:0.78rem;color:#64748b;margin-bottom:14px;max-width:780px;line-height:1.5">
+    Ranked by <b>frontier score</b> (novelty + specificity + operator-evidence), not popularity. Five tiers:
+    operator-proven → cross-vertical → weird-but-plausible → guru-speculative → saturated.
+    Evidence: <span style="color:#5eead4">operator</span> = owner running it · <span style="color:#fca5a5">guru</span> = pitched.
+  </div>
+  <div id="frontierPanel"><div class="empty">Run "🛰 Frontier Board" to populate this view.</div></div>
+
+  <!-- Automations Taxonomy (build_taxonomy.py output) -->
+  <div class="section-title">Automations People Are Teaching
+    <span id="taxMeta" style="font-weight:400;text-transform:none;letter-spacing:0;color:#475569"></span>
+  </div>
+  <div style="font-size:0.78rem;color:#64748b;margin-bottom:14px;max-width:760px;line-height:1.5">
+    Ranked by how many distinct videos teach each automation category — a breadth survey, not a recommendation.
+    <span style="color:#d8b4fe">■ purple</span> = an idea you flagged to watch · <span style="color:#5eead4">■ teal</span> = whitespace (few people teach it). Click a row for tools + examples.
+  </div>
+  <div id="taxonomyPanel"><div class="empty">Run "🧩 Build Taxonomy" to populate this view.</div></div>
+
   <!-- Findings Browser -->
   <div class="section-title">Findings Browser</div>
   <div class="tab-bar">
@@ -616,9 +649,9 @@
   <!-- (Legacy small cards hidden — data now in browser above) -->
   <div style="display:none" id="knowledgeGrid"></div>
 
-  <!-- Findings table -->
-  <div class="section-title">Top Automation Findings — Example Output</div>
-  <div class="table-wrap">
+  <!-- Findings table (legacy example output — hidden; superseded by the taxonomy panel above) -->
+  <div class="section-title" style="display:none">Top Automation Findings — Example Output</div>
+  <div class="table-wrap" style="display:none">
     <table>
       <thead>
         <tr>
@@ -753,9 +786,14 @@
 
     async function runStage(stage) {
       const statusEl = document.getElementById("runStatus");
+      const model = document.getElementById("modelSelect")?.value;
       setRunningUI(true, `Starting ${stage}…`);
       try {
-        const res = await fetch(`/api/run/${stage}`, { method: "POST" });
+        const res = await fetch(`/api/run/${stage}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ model }),
+        });
         const data = await res.json();
         if (data.error) {
           statusEl.textContent = `Error: ${data.error}`;
@@ -940,14 +978,15 @@
       await refreshStatus();
 
       await loadAllFindings();
+      await loadFrontier();
+      await loadTaxonomy();
 
-      const clusters = window.CLUSTER_DATA ?? EXAMPLE_CLUSTERS;
-      renderClusters(clusters);
-
-      // Auto-refresh status + knowledge every 15s
+      // Auto-refresh status + knowledge + frontier + taxonomy every 15s
       setInterval(async () => {
         await refreshStatus();
         await loadAllFindings();
+        await loadFrontier();
+        await loadTaxonomy();
       }, 15000);
 
       // Start log polling
@@ -1143,6 +1182,99 @@
       const el = document.getElementById("configStatus");
       el.textContent = msg;
       el.className = "config-save-status" + (isErr ? " err" : "");
+    }
+
+    // ── frontier board (build_frontier_board.py output) ───────────────────────
+    async function loadFrontier() {
+      let data;
+      try { const r = await fetch("/api/frontier"); data = r.ok ? await r.json() : null; } catch { data = null; }
+      const panel = document.getElementById("frontierPanel");
+      const meta = document.getElementById("frontierMeta");
+      if (!data || !data.sections || !Object.keys(data.sections).length) {
+        panel.innerHTML = '<div class="empty">No frontier board yet — run "🛰 Frontier Board" after extraction.</div>';
+        meta.textContent = ""; return;
+      }
+      const md = data.metadata || {};
+      meta.textContent = `· ${fmt(md.video_count)} videos · ${fmt(md.item_count)} items · ${fmt(md.cluster_count)} clusters`;
+      const order = ["Operator Patterns","Emerging Cross-Vertical Motifs","Weird but Plausible","Guru Frontier","Expected / Saturated"];
+      const evColor = { operator:"#5eead4", guru:"#fca5a5", mixed:"#fde68a", unknown:"#94a3b8" };
+      panel.innerHTML = order.filter(s => data.sections[s] && data.sections[s].length).map(s => {
+        const cards = data.sections[s].slice(0,8).map(c => {
+          const ev = `<span style="font-weight:700;color:${evColor[c.evidence_class]||'#94a3b8'}">${c.evidence_class}</span>`;
+          const tools = (c.tools||[]).slice(0,6).map(t => `<span class="finding-tag">${t}</span>`).join("");
+          const verts = (c.business_types||[]).slice(0,5).map(v => `<span class="finding-tag" style="color:#cbd5e1">🏢 ${v}</span>`).join("");
+          const quotes = (c.quotes||[]).map(q => `<div class="finding-quote" style="margin-top:6px">"${(q||"").slice(0,170)}"</div>`).join("");
+          const ex = (c.representative_examples||[]).slice(0,4).map(e => {
+            const link = e.video_id ? `https://youtu.be/${e.video_id}` : null;
+            const t = link ? `<a href="${link}" target="_blank" style="color:#64748b">${(e.title||"").slice(0,72)}</a>` : (e.title||"");
+            return `<div style="font-size:0.7rem;color:#475569;margin-top:2px">${e.evidence_class} · ${(e.name||"").slice(0,55)} — ${t}</div>`;
+          }).join("");
+          return `<div class="finding-card">
+            <div style="display:flex;align-items:baseline;gap:10px">
+              <div class="finding-name" style="flex:1;min-width:0">${c.cluster_name}</div>
+              <div style="font-weight:700;color:#7dd3fc;font-size:1rem">${c.frontier_score}</div>
+            </div>
+            <div style="font-size:0.72rem;color:#64748b;margin:4px 0">${ev} · ${c.support_videos} videos · ${c.support_items} items · ${c.why_interesting||""}</div>
+            <div class="finding-meta" style="margin-bottom:4px">${verts}${tools}</div>
+            ${quotes}${ex}
+          </div>`;
+        }).join("");
+        return `<div style="margin-bottom:24px"><div style="font-size:0.82rem;font-weight:700;color:#93c5fd;margin-bottom:10px;border-bottom:1px solid #2d3550;padding-bottom:6px">${s} <span style="color:#475569;font-weight:400">(${data.sections[s].length})</span></div>${cards}</div>`;
+      }).join("");
+    }
+
+    // ── automations taxonomy (build_taxonomy.py output) ───────────────────────
+    async function loadTaxonomy() {
+      let data;
+      try {
+        const res = await fetch("/api/taxonomy");
+        data = res.ok ? await res.json() : null;
+      } catch { data = null; }
+      const panel = document.getElementById("taxonomyPanel");
+      const meta = document.getElementById("taxMeta");
+      if (!data || !data.categories || !data.categories.length) {
+        panel.innerHTML = '<div class="empty">No taxonomy yet — run "🧩 Build Taxonomy" after extraction.</div>';
+        meta.textContent = "";
+        return;
+      }
+      meta.textContent = `· ${fmt(data.total_videos)} videos${data.generated_at ? " · " + data.generated_at.slice(0,10) : ""}`;
+      const max = Math.max(...data.categories.map(c => c.video_count), 1);
+      const catHtml = data.categories.map((c, i) => {
+        const isWhite = c.video_count < 10;
+        const tag = c.watch
+          ? '<span style="font-size:0.6rem;font-weight:700;background:#3b1d5f;color:#d8b4fe;padding:2px 7px;border-radius:9999px;text-transform:uppercase">Your idea</span>'
+          : (isWhite ? '<span style="font-size:0.6rem;font-weight:700;background:#063b3a;color:#5eead4;padding:2px 7px;border-radius:9999px;text-transform:uppercase">Whitespace</span>' : '');
+        const tools = (c.top_tools || []).map(t => `<span class="finding-tag">${t.tool} ×${t.n}</span>`).join("");
+        const ex = (c.examples || []).map(e => {
+          const link = e.video_id ? `https://youtu.be/${e.video_id}` : null;
+          const src = link ? `<a href="${link}" target="_blank" style="color:#64748b">${e.source||""}</a>` : (e.source||"");
+          return `<div class="finding-quote" style="margin-top:8px"><b style="color:#cbd5e1">${e.name||""}</b><br>${e.desc||""}<br><i>"${(e.quote||"").slice(0,150)}"</i><br><span style="color:#475569">— ${src}</span></div>`;
+        }).join("");
+        const barColor = c.watch ? "#c084fc" : "#60a5fa";
+        return `<div class="finding-card" style="cursor:pointer" onclick="const d=this.querySelector('.tax-detail');d.style.display=d.style.display==='block'?'none':'block'">
+          <div style="display:flex;align-items:center;gap:12px">
+            <div style="font-family:monospace;color:#475569;font-size:0.8rem;width:22px">${String(i+1).padStart(2,'0')}</div>
+            <div style="flex:1;min-width:0">
+              <div class="finding-name" style="margin-bottom:2px">${c.name} ${tag}</div>
+              <div style="font-size:0.74rem;color:#64748b">${c.desc||""}</div>
+              <div style="font-size:0.68rem;color:#475569;margin-top:2px">${c.distinct_automations!=null?c.distinct_automations+" distinct automations":""}${c.first_party_share!=null?" · <span style='color:#5eead4'>"+Math.round(c.first_party_share*100)+"% owner-run</span>":""}</div>
+            </div>
+            <div style="flex:1;max-width:280px"><div style="height:9px;background:#11131c;border-radius:5px;overflow:hidden"><div style="height:100%;width:${Math.round(c.video_count/max*100)}%;background:${barColor};border-radius:5px"></div></div></div>
+            <div style="font-weight:700;color:#f8fafc;font-size:1.05rem;min-width:46px;text-align:right">${c.video_count}<span style="font-size:0.6rem;color:#64748b;display:block">videos</span></div>
+          </div>
+          <div class="tax-detail" style="display:none;margin-top:12px;padding-top:10px;border-top:1px solid #232838">
+            <div style="font-size:0.64rem;color:#475569;text-transform:uppercase;letter-spacing:0.07em;margin-bottom:6px">Tools most named</div>
+            <div>${tools || '<span style="color:#475569;font-size:0.75rem">none named</span>'}</div>
+            <div style="font-size:0.64rem;color:#475569;text-transform:uppercase;letter-spacing:0.07em;margin:12px 0 4px">Example builds</div>
+            ${ex || '<span style="color:#475569;font-size:0.75rem">no examples captured</span>'}
+          </div>
+        </div>`;
+      }).join("");
+      const vHtml = (data.verticals && data.verticals.length)
+        ? `<div style="margin-bottom:20px"><div style="font-size:0.7rem;color:#475569;text-transform:uppercase;letter-spacing:0.07em;margin-bottom:8px">Emergent verticals — industries that surfaced from the data (${data.verticals.length})</div><div>${data.verticals.slice(0,50).map(v=>`<span class="finding-tag" style="margin:0 6px 6px 0;display:inline-block">${v.name} <span style="color:#475569">${v.video_count}</span></span>`).join("")}</div></div>`
+        : "";
+      const catHeader = `<div style="font-size:0.7rem;color:#475569;text-transform:uppercase;letter-spacing:0.07em;margin-bottom:8px">Emergent automation categories (${data.categories.length})</div>`;
+      panel.innerHTML = vHtml + catHeader + catHtml;
     }
 
     init();

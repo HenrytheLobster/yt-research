@@ -1,5 +1,5 @@
 """
-exploration_layer.py — Layer 2 Exploration Mode for KDP Scoring Policy
+exploration_layer.py — Layer 2 Exploration Mode for the Scoring Policy
 =======================================================================
 
 Implements frequency dampening to suppress consensus patterns and surface

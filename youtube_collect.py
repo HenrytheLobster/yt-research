@@ -21,6 +21,7 @@ import argparse
 import json
 import re
 import tempfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 
@@ -28,6 +29,20 @@ from utils import (
     QueueLock, load_pending_unlocked, save_pending_unlocked,
     update_entry, run_ytdlp, iso_now, AgentError, StageTimer,
 )
+
+
+def _discover_channel_ids(channel_url: str, max_videos: int | None = None) -> list[str]:
+    """Return video IDs from a YouTube channel uploads page."""
+    from youtube_discover import normalize_channel_url
+
+    url = normalize_channel_url(channel_url)
+    cmd = ["yt-dlp", "--flat-playlist", "--print", "id", "--no-warnings"]
+    if max_videos:
+        cmd += ["--playlist-end", str(max_videos)]
+    cmd.append(url)
+
+    result = run_ytdlp(cmd, timeout=120, label=f"discover channel {url[:40]}")
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
 ROOT = Path(__file__).parent
 DATA_DIR = ROOT / "data"
@@ -226,15 +241,57 @@ def collect(max_videos: int = None, reprocess_id: str = None):
     print(f"\n✨ Collection done. {collected} collected total.")
 
 
+def collect_channel(channel_url: str, max_videos: int | None = None, workers: int = 3):
+    """Collect transcripts directly from a channel uploads page, bypassing the queue."""
+    setup_dirs()
+    ids = _discover_channel_ids(channel_url, max_videos=max_videos)
+    if not ids:
+        print("📭 No videos found on channel.")
+        return
+
+    workers = max(1, int(workers))
+    if workers > 4:
+        print("WARNING: >4 workers risks rate-limiting; capping at 4.")
+        workers = 4
+
+    print(f"📺 Channel videos found: {len(ids)}")
+    print(f"⚙️  Collecting with {workers} worker(s)...")
+
+    stats = {"collected": 0, "no_transcript": 0, "failed": 0}
+
+    def _one(video_id: str):
+        url = f"https://www.youtube.com/watch?v={video_id}"
+        return video_id, collect_video(video_id, url)
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(_one, vid): vid for vid in ids}
+        for i, fut in enumerate(as_completed(futures), 1):
+            video_id, (success, err) = fut.result()
+            if success:
+                stats["collected"] += 1
+                print(f"[{i}/{len(ids)}] ✅ {video_id}")
+            else:
+                stats["no_transcript"] += 1
+                print(f"[{i}/{len(ids)}] ⏭️  {video_id}: {err}")
+
+    print("\n✨ Channel collect complete.")
+    print(json.dumps(stats, indent=2))
+
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Collect KDP video transcripts")
+    parser = argparse.ArgumentParser(description="Collect YouTube video transcripts")
     parser.add_argument("--max", type=int)
     parser.add_argument("--url", help="Collect a single URL directly")
     parser.add_argument("--reprocess", metavar="VIDEO_ID",
                         help="Force re-collection of a specific video ID")
+    parser.add_argument("--channel", help="Collect all videos from a channel uploads page")
+    parser.add_argument("--workers", type=int, default=3,
+                        help="Parallel workers for channel collect")
     args = parser.parse_args()
 
-    if args.url:
+    if args.channel:
+        collect_channel(args.channel, max_videos=args.max, workers=args.workers)
+    elif args.url:
         setup_dirs()
         m = re.search(r"(?:v=|youtu\.be/)([A-Za-z0-9_-]{11})", args.url)
         vid_id = m.group(1) if m else f"direct_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"

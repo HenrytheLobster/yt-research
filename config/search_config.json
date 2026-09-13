@@ -1,5 +1,6 @@
 {
-  "_comment": "Positive queries are entered per run in research_menu.py. Broad negative filters live here.",
+  "_comment": "Edit this file to control what youtube_discover.py searches for, or use manage_search.py. Positive queries can also be entered per-run in research_menu.py without touching this file. 'topic' is an optional plain-language description of what you're researching this file's queries are in service of; it fills in the triage/extraction prompts (triage.py, extract.py, research_run.py) so they aren't hardcoded to one subject. Leave 'topic' blank and it falls back to a summary of queries, or pass --topic on the command line for a one-off run.",
+  "topic": "",
   "queries": [],
   "negative_keywords": [
     "shorts",

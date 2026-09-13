@@ -1,7 +1,7 @@
 """
 youtube_discover.py — Source Watcher  (v2)
 ==========================================
-Discovers new KDP-relevant YouTube videos from seed queries and channels.
+Discovers new relevant YouTube videos from seed queries and channels.
 Outputs a queue of video metadata to data/queue/pending.jsonl.
 
 Changes from v1:
@@ -16,7 +16,7 @@ Changes from v1:
 Usage:
     python youtube_discover.py
     python youtube_discover.py --max 20
-    python youtube_discover.py --query "KDP BSR"
+    python youtube_discover.py --query "your research topic here"
     python youtube_discover.py --dry-run
 """
 
@@ -260,7 +260,7 @@ def discover(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Discover KDP YouTube videos")
+    parser = argparse.ArgumentParser(description="Discover YouTube videos")
     parser.add_argument("--query", help="Single query override")
     parser.add_argument("--channel", help="Single channel override")
     parser.add_argument("--max", type=int, default=MAX_RESULTS_PER_QUERY)

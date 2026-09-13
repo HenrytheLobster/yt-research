@@ -1,4 +1,4 @@
-"""Interactive text menu for programmatic SEO YouTube research runs."""
+"""Interactive text menu for topic-driven YouTube research runs."""
 
 import json
 import re
@@ -13,8 +13,8 @@ from utils import AgentError, call_llm
 ROOT = Path(__file__).parent
 CONFIG = ROOT / "config" / "search_config.json"
 RAW = ROOT / "data" / "youtube" / "raw"
-OUT = ROOT / "data" / "pseo"
-REPORT = ROOT / "reports" / "pseo_local_review.md"
+OUT = ROOT / "data" / "topic_research"
+REPORT = ROOT / "reports" / "topic_research_review.md"
 LAST_IDS = OUT / "latest_video_ids.json"
 LAST_RUN = OUT / "last_run.json"
 
@@ -141,7 +141,7 @@ def delete_previous_artifacts() -> None:
         shutil.rmtree(OUT)
     if REPORT.exists():
         REPORT.unlink()
-    print("Deleted prior pSEO transcript folders, pSEO cache, run markers, and report.")
+    print("Deleted prior transcript folders, analysis cache, run markers, and report.")
 
 
 def detect_ollama_models() -> list[str]:
@@ -239,7 +239,8 @@ def choose_timeout() -> int:
 
 
 def generate_keyword_ideas(model: str, negative_keywords: list[str]) -> list[str]:
-    seed = prompt("Seed topic for keyword ideas", "programmatic SEO best practices")
+    config_topic = load_json(CONFIG, {}).get("topic", "")
+    seed = prompt("Seed topic for keyword ideas", config_topic or None)
     prompt_text = f"""Generate YouTube search queries for a transcript research run.
 The goal is to find useful videos about: {seed}
 
@@ -313,7 +314,7 @@ def build_command(
     negatives: list[str],
     analysis_timeout: int = 900,
 ) -> list[str]:
-    cmd = [sys.executable, "-u", str(ROOT / "research_pseo.py")]
+    cmd = [sys.executable, "-u", str(ROOT / "research_run.py")]
     for step in steps:
         cmd.append(f"--{step}")
     if not any(step in steps for step in ["discover", "collect"]):
@@ -334,13 +335,13 @@ def build_command(
 
 
 def main() -> None:
-    print("Programmatic SEO research setup")
+    print("YouTube topic research setup")
     print_previous_keywords()
 
     dirs = transcript_dirs()
     if dirs or OUT.exists() or REPORT.exists():
-        print(f"\nPrior artifacts: {len(dirs)} transcript folder(s), pSEO cache/report may exist.")
-        if yes_no("Delete previous pSEO run artifacts before continuing?", default=False):
+        print(f"\nPrior artifacts: {len(dirs)} transcript folder(s), analysis cache/report may exist.")
+        if yes_no("Delete previous run artifacts before continuing?", default=False):
             delete_previous_artifacts()
 
     models = model_options()
@@ -349,7 +350,7 @@ def main() -> None:
     steps = choose_steps()
     if not steps:
         raise SystemExit("No steps selected.")
-    count = choose_count() if any(step in steps for step in ["discover", "collect"]) else 0
+    count = choose_count() if any(step in steps for step in ["discover", "collect", "analyze"]) else 0
     analysis_timeout = choose_timeout() if "analyze" in steps else 900
     _, _, negatives = previous_keywords()
     queries = choose_keywords(model, negatives) if "discover" in steps else []

@@ -20,6 +20,7 @@ Install:
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -40,6 +41,7 @@ DATA_DIR = ROOT / "data"
 QUEUE_DIR = DATA_DIR / "queue"
 PENDING_FILE = QUEUE_DIR / "pending.jsonl"
 LOCK_FILE = QUEUE_DIR / "pending.lock"
+SEARCH_CONFIG_FILE = ROOT / "config" / "search_config.json"
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434/api/generate")
 GEMINI_API_BASE = os.environ.get(
@@ -211,11 +213,16 @@ def run_ytdlp(
     """
     backoff = backoff or YTDLP_BACKOFF
     last_exc: Exception | None = None
+    actual_cmd = cmd
+    if cmd and cmd[0] == "yt-dlp" and shutil.which("yt-dlp") is None:
+        # Some machines only have the pip package installed, not the yt-dlp.exe
+        # on PATH — fall back to `python -m yt_dlp` transparently.
+        actual_cmd = [sys.executable, "-m", "yt_dlp", *cmd[1:]]
 
     for attempt in range(retries + 1):
         try:
             result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=timeout
+                actual_cmd, capture_output=True, text=True, timeout=timeout
             )
             if result.returncode != 0 and "ERROR" in result.stderr:
                 raise RuntimeError(result.stderr[:200])
@@ -253,7 +260,42 @@ def infer_llm_provider(model: str, provider: str | None = None) -> str:
         return "codex"
     if lowered.startswith("gemini"):
         return "gemini"
+    if lowered == "grok" or lowered.startswith("grok-"):
+        return "grok"
     return current_llm_provider()
+
+
+# ─── topic resolution ─────────────────────────────────────────────────────────
+
+def load_search_config() -> dict:
+    if not SEARCH_CONFIG_FILE.exists():
+        return {}
+    try:
+        return json.loads(SEARCH_CONFIG_FILE.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+
+
+def resolve_topic(explicit: str | None = None, queries: list[str] | None = None) -> str:
+    """
+    Resolve a short, human-readable description of what this run is researching.
+    Used to fill in the triage/extraction prompts so they aren't hardcoded to any
+    one subject. Priority: explicit arg > RESEARCH_TOPIC env var > config "topic"
+    field > the run's own queries > a generic fallback.
+    """
+    if explicit:
+        return explicit.strip()
+    env_topic = os.environ.get("RESEARCH_TOPIC")
+    if env_topic:
+        return env_topic.strip()
+    config = load_search_config()
+    if config.get("topic"):
+        return str(config["topic"]).strip()
+    candidate_queries = queries if queries else config.get("queries") or []
+    candidate_queries = [q for q in candidate_queries if q]
+    if candidate_queries:
+        return "; ".join(candidate_queries[:5])
+    return "the topic these YouTube videos are about"
 
 
 def llm_model_name(model: str) -> str:
@@ -290,12 +332,19 @@ def call_ollama(
             return None
     """
     backoff = backoff or OLLAMA_BACKOFF
+    request_options = dict(options or {"temperature": 0.1, "num_ctx": 16384})
+    response_format = request_options.pop("format", None)
+    think = request_options.pop("think", None)
     payload = {
         "model": model,
         "prompt": prompt,
         "stream": False,
-        "options": options or {"temperature": 0.1, "num_ctx": 16384},
+        "options": request_options,
     }
+    if response_format is not None:
+        payload["format"] = response_format
+    if think is not None:
+        payload["think"] = think
     last_exc: Exception | None = None
 
     for attempt in range(retries + 1):
@@ -483,6 +532,57 @@ def call_codex_cli(
     raise AgentError(f"Codex CLI {model_name} failed after {retries+1} attempts: {last_exc}")
 
 
+def call_grok_cli(
+    prompt: str,
+    model: str,
+    timeout: int = 240,
+    retries: int = OLLAMA_RETRIES,
+    backoff: list[int] | None = None,
+) -> str:
+    """Call the authenticated Grok CLI in single-turn mode."""
+    backoff = backoff or OLLAMA_BACKOFF
+    cmd = [
+        "grok",
+        "--output-format", "plain",
+        "--max-turns", "1",
+        "--disable-web-search",
+        "--permission-mode", "dontAsk",
+    ]
+    if model.lower().startswith("grok-"):
+        cmd.extend(["--model", model])
+
+    last_exc: Exception | None = None
+    for attempt in range(retries + 1):
+        prompt_file = None
+        try:
+            with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8") as f:
+                f.write(prompt)
+                prompt_file = f.name
+            result = subprocess.run(
+                [*cmd, "--prompt-file", prompt_file],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+            if result.returncode != 0:
+                raise RuntimeError((result.stderr or result.stdout or "").strip()[:500])
+            return result.stdout.strip()
+        except (subprocess.TimeoutExpired, RuntimeError, OSError) as e:
+            last_exc = e
+            if attempt < retries:
+                wait = backoff[min(attempt, len(backoff) - 1)]
+                print(f"    ⚠️  Grok CLI {model} attempt {attempt+1}/{retries+1}: "
+                      f"{type(e).__name__}. Retrying in {wait}s...")
+                time.sleep(wait)
+        finally:
+            if prompt_file:
+                try:
+                    os.unlink(prompt_file)
+                except OSError:
+                    pass
+    raise AgentError(f"Grok CLI {model} failed after {retries+1} attempts: {last_exc}")
+
+
 def call_llm(
     prompt: str,
     model: str,
@@ -516,6 +616,14 @@ def call_llm(
             model=model,
             timeout=timeout,
             options=options,
+            retries=retries,
+            backoff=backoff,
+        )
+    if resolved == "grok":
+        return call_grok_cli(
+            prompt,
+            model=model,
+            timeout=timeout,
             retries=retries,
             backoff=backoff,
         )

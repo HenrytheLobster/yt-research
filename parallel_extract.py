@@ -30,7 +30,7 @@ from extract import extract_video  # import the core function
 DEFAULT_WORKERS = 3
 
 
-def worker_process(worker_id: int, max_per_worker: int):
+def worker_process(worker_id: int, max_per_worker: int, topic: str | None = None):
     """
     Each worker:
     1. Locks queue
@@ -69,7 +69,7 @@ def worker_process(worker_id: int, max_per_worker: int):
         # Extract (SLOW - happens outside lock). force=True so a re-extract overwrites
         # any cached JSON instead of silently returning the old version.
         try:
-            result = extract_video(video_id, force=True)
+            result = extract_video(video_id, force=True, topic=topic)
             success = result is not None
         except Exception as e:
             print(f"[Worker {worker_id}] ERROR {video_id}: {e}")
@@ -120,7 +120,7 @@ def count_pending() -> int:
     return sum(1 for e in entries if e.get("status") == "pending_extract")
 
 
-def run_parallel(workers: int = DEFAULT_WORKERS, total=None):
+def run_parallel(workers: int = DEFAULT_WORKERS, total=None, topic: str | None = None):
     """
     Spawn `workers` worker processes that drain the pending_extract queue.
     Callable from run_agent.py or this file's CLI. If `total` is None, processes
@@ -148,7 +148,7 @@ def run_parallel(workers: int = DEFAULT_WORKERS, total=None):
     start_time = time.time()
     processes = []
     for i in range(workers):
-        p = mp.Process(target=worker_process, args=(i, per_worker))
+        p = mp.Process(target=worker_process, args=(i, per_worker, topic))
         p.start()
         processes.append(p)
     for p in processes:
@@ -168,11 +168,12 @@ def main():
                         help="Total videos to process (default: all pending)")
     parser.add_argument("--reset", action="store_true",
                         help="Flip every video with a transcript back to pending_extract first")
+    parser.add_argument("--topic", help="Override the research topic for this run")
     args = parser.parse_args()
 
     if args.reset:
         reset_for_reextract()
-    run_parallel(workers=args.workers, total=args.max)
+    run_parallel(workers=args.workers, total=args.max, topic=args.topic)
 
 
 if __name__ == "__main__":

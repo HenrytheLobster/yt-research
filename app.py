@@ -9,6 +9,7 @@ Usage:
 """
 
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -26,7 +27,7 @@ SEARCH_CONFIG_FILE = ROOT / "config" / "search_config.json"
 
 app = Flask(__name__)
 
-VALID_STAGES = {"discover", "collect", "collect-parallel", "triage", "extract", "extract-parallel", "merge", "policy", "report", "full"}
+VALID_STAGES = {"discover", "collect", "collect-parallel", "triage", "extract", "extract-parallel", "merge", "policy", "report", "full", "build-taxonomy", "build-frontier"}
 
 # ── Live run log ──────────────────────────────────────────────────────────────
 # Background thread drains subprocess stdout into this deque.
@@ -159,6 +160,12 @@ def run_stage(stage):
                     continue
         return n
 
+    # Optional extraction-model override from the UI (local Ollama / Ollama cloud / Gemini).
+    model = (request.get_json(silent=True) or {}).get("model") or request.args.get("model")
+    run_env = os.environ.copy()
+    if model:
+        run_env["EXTRACT_MODEL"] = model.strip()
+
     if stage == "extract-parallel":
         max_videos = max(_count_status("pending_extract"), 1)
         cmd = [sys.executable, str(ROOT / "parallel_extract.py"),
@@ -167,17 +174,19 @@ def run_stage(stage):
         max_videos = max(_count_status("queued"), 1)
         cmd = [sys.executable, str(ROOT / "parallel_collect.py"),
                "--workers", "3", "--max", str(max_videos)]
+    elif stage == "build-taxonomy":
+        cmd = [sys.executable, str(ROOT / "build_taxonomy.py")]
+    elif stage == "build-frontier":
+        cmd = [sys.executable, str(ROOT / "build_frontier_board.py")]
     else:
         mode = "full" if stage == "full" else stage
         cmd = [sys.executable, str(ROOT / "run_agent.py"), "--mode", mode]
-        if stage == "full":
-            # Keep the Mac mini dashboard aligned with the shared-IP throttle limit.
-            cmd.extend(["--workers", "2"])
 
     try:
         proc = subprocess.Popen(
             cmd,
             cwd=str(ROOT),
+            env=run_env,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -207,6 +216,30 @@ def stop_run():
         return jsonify({"stopped": True})
     except Exception as e:
         return jsonify({"stopped": False, "reason": str(e)}), 500
+
+
+@app.route("/api/frontier")
+def frontier():
+    """Return the frontier board (novelty-ranked clusters in editorial sections)."""
+    f = DATA_DIR / "frontier_board.json"
+    if not f.exists():
+        return jsonify({"sections": {}, "metadata": {}}), 200
+    try:
+        return jsonify(json.loads(f.read_text(encoding="utf-8")))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/taxonomy")
+def taxonomy():
+    """Return the automations taxonomy built by build_taxonomy.py (the core findings view)."""
+    f = DATA_DIR / "automations_taxonomy.json"
+    if not f.exists():
+        return jsonify({"categories": [], "total_videos": 0, "generated_at": None}), 200
+    try:
+        return jsonify(json.loads(f.read_text(encoding="utf-8")))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/policy")

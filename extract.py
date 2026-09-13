@@ -23,12 +23,13 @@ import json
 import os
 import re
 import uuid
+
 from datetime import datetime
 from pathlib import Path
 
 from utils import (
     QueueLock, load_pending_unlocked, save_pending_unlocked,
-    update_entry, call_ollama, iso_now, AgentError,
+    update_entry, call_llm, resolve_topic, iso_now, AgentError,
     enforce_quotes_in_extraction, StageTimer,
 )
 
@@ -124,8 +125,8 @@ def update_entry_reddit(entries: list[dict], video_id: str, updates: dict):
             e["attempt_count"] = e.get("attempt_count", 0) + 1
             break
 
-EXTRACT_MODEL = os.environ.get("EXTRACT_MODEL", "qwen3:8b")  # was 3b (parroted template); 7b/qwen3 far better. qwen3 needs /no_think (below)
-REPAIR_MODEL = "phi3:mini"
+EXTRACT_MODEL = os.environ.get("EXTRACT_MODEL", "qwen3:8b")  # Ollama default; also accepts grok, gemini-*, claude:*, codex:* via utils.call_llm
+REPAIR_MODEL = os.environ.get("REPAIR_MODEL", "phi3:mini")
 CHUNK_SIZE = 6000
 MAX_CHUNKS = 4
 
@@ -158,9 +159,11 @@ def chunk_transcript(text: str, chunk_size: int = CHUNK_SIZE, max_chunks: int = 
     return chunks
 
 
-# call_ollama imported from utils (has retry + backoff built in)
+# call_llm imported from utils (provider-agnostic; has retry + backoff built in)
 
-EXTRACTION_PROMPT = """You extract CONCRETE, REAL automations that a small-business owner is actually shown using in this YouTube transcript. You are building an inventory of "what automations do people really install and run."
+EXTRACTION_PROMPT = """You extract CONCRETE, REAL information about the following topic from a YouTube transcript: {topic}
+
+You are building an inventory of specific, sourced facts, tactics, tools, and claims about {topic} — things a viewer could actually act on, not general hype.
 
 VIDEO TITLE: {title}
 CHUNK: {chunk_num} of {total_chunks}
@@ -171,34 +174,34 @@ TRANSCRIPT SECTION:
 CRITICAL RULES — read carefully:
 - The JSON below is a SCHEMA, not content. The angle-bracket fields like <...> are
   instructions describing what to write. NEVER copy the words inside <...> into your
-  answer. If you output text like "short name" or "real estate agent + lead follow-up + n8n",
+  answer. If you output text like "short name" or "specific tactic name here",
   you have failed.
-- Include an item ONLY if a SPECIFIC automation, tool, or workflow is explicitly named or
-  described in THIS transcript chunk. Every item MUST include a real verbatim source_quote
-  copied from the transcript above. No quote → do not include the item.
-- If the chunk is generic hype, motivation, or "you should use AI" with no concrete
-  mechanism, return empty arrays. Empty is correct and expected — do NOT invent items.
-- Do NOT fill thresholds (hours saved, cost) with guesses. Only include a number if it is
-  literally stated in the transcript; otherwise omit the field.
+- Include an item ONLY if a SPECIFIC method, tool, workflow, data point, or claim related to
+  {topic} is explicitly named or described in THIS transcript chunk. Every item MUST include a
+  real verbatim source_quote copied from the transcript above. No quote → do not include the item.
+- If the chunk is generic hype, motivation, or vague enthusiasm with no concrete mechanism
+  related to {topic}, return empty arrays. Empty is correct and expected — do NOT invent items.
+- Do NOT fill thresholds (hours saved, cost, results) with guesses. Only include a number if it
+  is literally stated in the transcript; otherwise omit the field.
 
 Return ONLY a valid JSON object — no preamble, no markdown fences.
 
 {{
   "tactics": [
     {{
-      "name": "<3-6 word name of THIS specific automation, e.g. taken from the transcript>",
-      "description": "<what it does: the trigger, the steps, the output — only what is stated>",
-      "trigger": "<what kicks it off, if stated>",
+      "name": "<3-6 word name of THIS specific tactic, method, or move related to {topic}, taken from the transcript when possible>",
+      "description": "<what it does — only what is stated in the transcript>",
+      "trigger": "<when/why it's used, if stated, else empty>",
       "tools_mentioned": ["<only tools NAMED in this chunk>"],
-      "business_type": "<the business this is shown for, if stated, else empty>",
-      "result_claim": "<any stated outcome, e.g. time saved, only if stated verbatim>",
-      "first_party": "<true if an owner/operator describes running it themselves; false if a guru is pitching/selling it>",
+      "business_type": "<the niche, audience, or context this is shown for, if stated, else empty>",
+      "result_claim": "<any stated outcome, e.g. time saved, results achieved, only if stated verbatim>",
+      "first_party": "<true if the speaker describes doing this themselves; false if they're only pitching/describing someone else's approach>",
       "source_quotes": ["<one verbatim sentence copied from the transcript proving this exists>"]
     }}
   ],
   "claims": [
     {{
-      "statement": "<a specific factual claim about an automation's effect, stated in the transcript>",
+      "statement": "<a specific factual claim about {topic}, stated in the transcript>",
       "category": "<one of: tool_behavior | implementation | risk | use_case | market_dynamics>",
       "confidence": "<high | medium | low>",
       "source_quotes": ["<verbatim quote from transcript>"]
@@ -206,8 +209,8 @@ Return ONLY a valid JSON object — no preamble, no markdown fences.
   ],
   "niche_patterns": [
     {{
-      "pattern_template": "<businessType + painPoint + tool, all drawn from THIS transcript>",
-      "description": "<what the automation opportunity is, per the transcript>",
+      "pattern_template": "<the recurring pattern or opportunity related to {topic}, drawn from THIS transcript>",
+      "description": "<what the pattern or opportunity is, per the transcript>",
       "why_it_works": "<reason, if stated>",
       "source_quotes": ["<verbatim quote from transcript>"]
     }}
@@ -258,7 +261,7 @@ def parse_json_with_repair(raw: str, video_id: str) -> dict | None:
     print(f"    🔧 Attempting JSON repair with {REPAIR_MODEL}...")
     try:
         repair_prompt = REPAIR_PROMPT.format(broken=cleaned[:3000])
-        repaired = call_ollama(repair_prompt, model=REPAIR_MODEL, timeout=60)
+        repaired = call_llm(repair_prompt, model=REPAIR_MODEL, timeout=60)
         repaired_clean = re.sub(r"```(?:json)?", "", repaired).strip()
         match2 = re.search(r'\{.*\}', repaired_clean, re.DOTALL)
         if match2:
@@ -347,7 +350,7 @@ def quarantine_video(video_id: str, reason: str):
 
 # ─── extract one video ────────────────────────────────────────────────────────
 
-def extract_video(video_id: str, force: bool = False) -> dict | None:
+def extract_video(video_id: str, force: bool = False, topic: str | None = None) -> dict | None:
     EXTRACTED_DIR.mkdir(parents=True, exist_ok=True)
     out_file = EXTRACTED_DIR / f"{video_id}.json"
 
@@ -368,6 +371,7 @@ def extract_video(video_id: str, force: bool = False) -> dict | None:
     if meta_file.exists():
         title = json.loads(meta_file.read_text()).get("title", "")
 
+    resolved_topic = resolve_topic(topic)
     chunks = chunk_transcript(transcript)
     total = len(chunks)
     print(f"  🤖 Extracting '{title[:50]}' — {total} chunk(s)...")
@@ -378,12 +382,13 @@ def extract_video(video_id: str, force: bool = False) -> dict | None:
         prompt = EXTRACTION_PROMPT.format(
             title=title, video_id=video_id,
             chunk_num=i, total_chunks=total,
-            transcript=chunk,
+            transcript=chunk, topic=resolved_topic,
         )
         try:
-            raw = call_ollama(prompt, model=EXTRACT_MODEL, options={"temperature": 0.1, "num_ctx": 4096})
+            raw = call_llm(prompt, model=EXTRACT_MODEL, timeout=300,
+                            options={"temperature": 0.1, "num_ctx": 4096})
         except AgentError as e:
-            print(f"⚠️  Ollama failed on chunk {i}: {e} — skipping chunk")
+            print(f"⚠️  {EXTRACT_MODEL} failed on chunk {i}: {e} — skipping chunk")
             continue
 
         parsed = parse_json_with_repair(raw, video_id)
@@ -427,7 +432,7 @@ def extract_video(video_id: str, force: bool = False) -> dict | None:
 
 # ─── main ─────────────────────────────────────────────────────────────────────
 
-def extract_all(max_videos: int = None, source: str = "youtube"):
+def extract_all(max_videos: int = None, source: str = "youtube", topic: str | None = None):
     set_source_paths(source)
     with queue_lock():
         entries = load_pending_unlocked() if SOURCE == "youtube" else load_pending_unlocked_reddit()
@@ -445,7 +450,7 @@ def extract_all(max_videos: int = None, source: str = "youtube"):
     for i, entry in enumerate(to_extract, 1):
         vid = entry["video_id"]
         timer.start_item()
-        result = extract_video(vid)
+        result = extract_video(vid, topic=topic)
         timer.end_item()
         (update_entry if SOURCE == "youtube" else update_entry_reddit)(entries, vid, {
             "status": "extracted" if result else "extract_failed",
@@ -464,6 +469,7 @@ if __name__ == "__main__":
     parser.add_argument("--max", type=int)
     parser.add_argument("--reprocess", metavar="VIDEO_ID")
     parser.add_argument("--source", choices=["youtube","reddit"], default="youtube")
+    parser.add_argument("--topic", help="Override the research topic for this run")
     args = parser.parse_args()
 
     EXTRACTED_DIR.mkdir(parents=True, exist_ok=True)
@@ -471,7 +477,7 @@ if __name__ == "__main__":
     if args.reprocess:
         with queue_lock():
             entries = load_pending_unlocked()
-        result = extract_video(args.reprocess, force=True)
+        result = extract_video(args.reprocess, force=True, topic=args.topic)
         update_entry(entries, args.reprocess, {
             "status": "extracted" if result else "extract_failed",
             "last_error": None if result else "reprocess failed",
@@ -480,6 +486,6 @@ if __name__ == "__main__":
             save_pending_unlocked(entries)
     elif args.video_id:
         set_source_paths(args.source)
-        extract_video(args.video_id)
+        extract_video(args.video_id, topic=args.topic)
     else:
-        extract_all(max_videos=args.max, source=args.source)
+        extract_all(max_videos=args.max, source=args.source, topic=args.topic)

@@ -1,7 +1,7 @@
 """
 schemas.py — Data Format Documentation
 ========================================
-Reference documentation for all JSON structures used by the KDP Research Agent.
+Reference documentation for all JSON structures used by the YouTube Research Agent.
 
 NOTE: These schema functions are NOT imported or enforced by other modules.
 They serve as living documentation of the expected field names and types for
@@ -34,7 +34,7 @@ def video_meta_schema(
     view_count: int,
     description: str,
     tags: list[str],
-    discovered_via: str,       # "query:KDP niche research" or "channel:XYZ"
+    discovered_via: str,       # "query:some search phrase" or "channel:XYZ"
     queued_at: str = None,
 ) -> dict:
     return {
@@ -62,7 +62,7 @@ def triage_result_schema(
     decision: str,          # "extract" | "skip"
     reason: str,
     confidence: float,      # 0.0–1.0
-    kdp_term_hits: list[str],
+    topic_term_hits: list[str],
     transcript_word_count: int,
 ) -> dict:
     return {
@@ -70,7 +70,7 @@ def triage_result_schema(
         "decision": decision,
         "reason": reason,
         "confidence": confidence,
-        "kdp_term_hits": kdp_term_hits,
+        "topic_term_hits": topic_term_hits,
         "transcript_word_count": transcript_word_count,
         "triaged_at": datetime.utcnow().isoformat(),
     }

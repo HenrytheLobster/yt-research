@@ -7,6 +7,7 @@ __pycache__/
 dist/
 build/
 .env
+
 .venv/
 venv/
 
@@ -18,15 +19,23 @@ venv/
 data/
 reports/report_*.md
 reports/pseo_local_review.md
+reports/topic_research_review.md
 reports/channel_analysis_*.md
 reports/search_corpus_*.md
 Slides/
 
 # Local backups
 Working youtube research v1.zip
+yt-research.tar
 
 # Generated config
 config/scoring_policy.json
+mac-mini-setup/automations_taxonomy.*
+mac-mini-setup/frontier_board.*
+mac-mini-setup/frontier_items.json
+
+# Ignore discarded or backup git directories
+.git_DISCARDED*/
 
 # Legacy local-only folder
 NewFeatures/

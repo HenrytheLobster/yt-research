@@ -531,7 +531,7 @@ def generate_policy(include_low: bool = False, exploration_layer_2: bool = False
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Generate AI Automation Research scoring policy with optional Layer 2 exploration"
+        description="Generate YouTube research scoring policy with optional Layer 2 exploration"
     )
     parser.add_argument("--include-low", action="store_true",
                         help="Include low-confidence rules in active policy")

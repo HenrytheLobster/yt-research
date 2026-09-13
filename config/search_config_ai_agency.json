@@ -1,0 +1,31 @@
+{
+  "_comment": "Focused search corpus for AI-agency go-to-market research. Prioritizes niches, acquisition, audits, seminars, outreach, pricing, and fulfillment over generic tool hype.",
+  "queries": [
+    "build an AI agency",
+    "how to start an AI agency",
+    "AI automation agency",
+    "sell AI to local businesses",
+    "sell AI services to businesses",
+    "AI audit business",
+    "AI assessment business",
+    "AI agency lead generation",
+    "AI agency cold outreach",
+    "AI agency pricing",
+    "AI automation niche local business",
+    "AI automation for boring businesses",
+    "AI meetup local business",
+    "AI seminar local business",
+    "AI proof of concept outreach",
+    "AI service business case study"
+  ],
+  "negative_keywords": [
+    "amazon wholesale",
+    "amazon fba",
+    "dropshipping",
+    "gaming",
+    "music video",
+    "crypto",
+    "shorts"
+  ],
+  "channels": []
+}

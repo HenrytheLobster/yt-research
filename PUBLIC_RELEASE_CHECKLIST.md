@@ -14,7 +14,7 @@ Use this as the final pass before making the repository public.
 - Confirm whether generated analysis reports in `reports/` should be public or moved out of the repo.
 - Confirm whether notes in `New Features/` are intended for public readers.
 - Choose and add a license file before publishing if you want others to reuse the code.
-- Update `README.md` if the public project scope is broader than the original KDP research agent.
+- Update `README.md` if the public project scope has changed since it was last written.
 
 ## Shareability
 
