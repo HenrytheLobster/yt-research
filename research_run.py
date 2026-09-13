@@ -113,6 +113,29 @@ def parse_json(response: str) -> dict:
     return json.loads(match.group())
 
 
+def failed_result(
+    *,
+    video_id: str,
+    model: str,
+    meta: dict,
+    segments: int,
+    findings: list,
+    rejected: list,
+    error: Exception | str,
+    failed_segment: int | None = None,
+) -> dict:
+    return {
+        "video_id": video_id,
+        "model": model,
+        "meta": meta,
+        "segments": segments,
+        "findings": findings,
+        "rejected": rejected,
+        "error": f"{type(error).__name__}: {error}" if isinstance(error, Exception) else str(error),
+        "failed_segment": failed_segment,
+    }
+
+
 def words(text: str) -> list[str]:
     return re.findall(r"\w+", text.casefold())
 
@@ -192,7 +215,22 @@ Transcript segment:
             finally:
                 stop_heartbeat.set()
                 monitor.join(timeout=1)
-            parsed = parse_json(response)
+            try:
+                parsed = parse_json(response)
+            except (ValueError, json.JSONDecodeError) as exc:
+                elapsed = time.monotonic() - started
+                print(f"{video_id}: segment {number}/{len(segments)} returned unusable JSON "
+                      f"after {elapsed:.0f}s: {exc}", flush=True)
+                return failed_result(
+                    video_id=video_id,
+                    model=model,
+                    meta=meta,
+                    segments=len(segments),
+                    findings=findings,
+                    rejected=rejected,
+                    error=exc,
+                    failed_segment=number,
+                )
             cache.write_text(json.dumps(parsed, indent=2), encoding="utf-8")
             print(f"{video_id}: segment {number}/{len(segments)} done in "
                   f"{time.monotonic() - started:.0f}s", flush=True)
@@ -233,7 +271,27 @@ def analyze_video_ids(video_ids: list[str], model: str, topic: str, timeout: int
             print(f"{video_id}: cached at {path}", flush=True)
             result = json.loads(path.read_text(encoding="utf-8"))
         else:
-            result = extract(video_id, model, topic, timeout=timeout)
+            try:
+                result = extract(video_id, model, topic, timeout=timeout)
+            except Exception as exc:
+                print(f"{video_id}: analysis failed unexpectedly: {exc}", flush=True)
+                try:
+                    folder = RAW / video_id
+                    meta = json.loads((folder / "meta.json").read_text(encoding="utf-8"))
+                    transcript = (folder / "transcript.txt").read_text(encoding="utf-8")
+                    segment_count = len(chunks(transcript))
+                except Exception:
+                    meta = {"title": video_id, "url": f"https://www.youtube.com/watch?v={video_id}"}
+                    segment_count = 0
+                result = failed_result(
+                    video_id=video_id,
+                    model=model,
+                    meta=meta,
+                    segments=segment_count,
+                    findings=[],
+                    rejected=[],
+                    error=exc,
+                )
             path.write_text(json.dumps(result, indent=2), encoding="utf-8")
         print(f"{video_id}: {len(result['findings'])} verified quotes, "
               f"{len(result['rejected'])} rejected", flush=True)
