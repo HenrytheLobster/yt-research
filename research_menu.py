@@ -1,18 +1,23 @@
 """Interactive text menu for topic-driven YouTube research runs."""
 
 import json
+import os
 import re
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
-from utils import AgentError, call_llm
+from utils import AgentError, QueueLock, call_llm, iso_now, load_pending_unlocked, save_pending_unlocked
 
 
 ROOT = Path(__file__).parent
 CONFIG = ROOT / "config" / "search_config.json"
 RAW = ROOT / "data" / "youtube" / "raw"
+QUEUE = ROOT / "data" / "queue"
+EXTRACTED = ROOT / "data" / "youtube" / "extracted"
+KNOWLEDGE = ROOT / "data" / "knowledge"
+QUARANTINE = ROOT / "data" / "quarantine"
 OUT = ROOT / "data" / "topic_research"
 REPORT = ROOT / "reports" / "topic_research_review.md"
 LAST_IDS = OUT / "latest_video_ids.json"
@@ -20,10 +25,14 @@ LAST_RUN = OUT / "last_run.json"
 
 
 STEP_CHOICES = {
+    "full": "full classic pipeline",
     "discover": "discover videos",
     "collect": "download transcripts",
-    "analyze": "analyze transcripts",
-    "report": "write report",
+    "triage": "triage collected transcripts",
+    "extract": "extract tactics and claims",
+    "merge": "merge repeated findings",
+    "policy": "generate scoring policy",
+    "report": "write wisdom-of-crowds report",
 }
 
 
@@ -135,13 +144,53 @@ def transcript_dirs() -> list[Path]:
 
 
 def delete_previous_artifacts() -> None:
-    for folder in transcript_dirs():
-        shutil.rmtree(folder)
-    if OUT.exists():
-        shutil.rmtree(OUT)
+    for path in [RAW, QUEUE, EXTRACTED, KNOWLEDGE, QUARANTINE, OUT]:
+        if path.exists():
+            shutil.rmtree(path)
+        path.mkdir(parents=True, exist_ok=True)
     if REPORT.exists():
         REPORT.unlink()
-    print("Deleted prior transcript folders, analysis cache, run markers, and report.")
+    print("Deleted prior queue, transcripts, extractions, knowledge base, cache, and one-shot report.")
+
+
+def seed_queue_from_transcripts(status: str) -> int:
+    """Make transcripts collected by the quick runner visible to the classic pipeline."""
+    dirs = [path for path in transcript_dirs() if (path / "meta.json").exists() and (path / "transcript.txt").exists()]
+    if not dirs:
+        return 0
+    QUEUE.mkdir(parents=True, exist_ok=True)
+    with QueueLock():
+        entries = load_pending_unlocked()
+        existing = {entry.get("video_id") for entry in entries}
+        added = 0
+        for folder in dirs:
+            video_id = folder.name
+            if video_id in existing:
+                continue
+            try:
+                meta = json.loads((folder / "meta.json").read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                meta = {}
+            entries.append({
+                "video_id": video_id,
+                "url": meta.get("url") or meta.get("webpage_url") or f"https://www.youtube.com/watch?v={video_id}",
+                "title": meta.get("title", ""),
+                "channel": meta.get("channel") or meta.get("uploader", ""),
+                "publish_date": meta.get("publish_date", ""),
+                "duration_seconds": meta.get("duration_seconds") or meta.get("duration", 0),
+                "view_count": meta.get("view_count", 0),
+                "description": meta.get("description", ""),
+                "tags": meta.get("tags") or [],
+                "discovered_via": "existing_transcript",
+                "queued_at": iso_now(),
+                "status": status,
+                "attempt_count": 0,
+                "last_error": None,
+                "last_attempt_at": None,
+            })
+            added += 1
+        save_pending_unlocked(entries)
+    return added
 
 
 def detect_ollama_models() -> list[str]:
@@ -189,19 +238,19 @@ def model_options() -> list[tuple[str, str]]:
 
 def choose_steps() -> list[str]:
     options = [
-        ("full", "full run: discover, download transcripts, analyze, report"),
+        ("full", "full classic pipeline: discover, download, triage, extract, merge, policy, report"),
         ("collect", "discover and download transcripts only"),
-        ("analyze", "analyze existing transcripts and write report"),
-        ("report", "write report from cached analysis"),
+        ("analyze", "process existing transcripts into the knowledge report"),
+        ("report", "write report from existing knowledge base"),
         ("custom", "choose individual steps"),
     ]
     choice = choose_one("Run scope", options)
     if choice == "full":
-        return ["discover", "collect", "analyze", "report"]
+        return ["full"]
     if choice == "collect":
         return ["discover", "collect"]
     if choice == "analyze":
-        return ["analyze", "report"]
+        return ["triage", "extract", "merge", "policy", "report"]
     if choice == "report":
         return ["report"]
     print("\nChoose steps")
@@ -306,32 +355,80 @@ def choose_keywords(model: str, negative_keywords: list[str]) -> list[str]:
         print("Please enter at least one keyword query.")
 
 
-def build_command(
+def build_commands(
     model: str,
     steps: list[str],
     count: int,
     queries: list[str],
     negatives: list[str],
     analysis_timeout: int = 900,
-) -> list[str]:
-    cmd = [sys.executable, "-u", str(ROOT / "research_run.py")]
-    for step in steps:
-        cmd.append(f"--{step}")
-    if not any(step in steps for step in ["discover", "collect"]):
-        cmd.append("--use-latest-ids")
-    cmd += ["--model", model]
-    if "analyze" in steps:
-        cmd += ["--analysis-timeout", str(analysis_timeout)]
-    if count:
-        cmd += ["--max-videos", str(count)]
+) -> list[list[str]]:
+    del analysis_timeout
+    topic = "; ".join(queries)
+    discover_max = max(1, min(100, count or 20))
+
+    def add_common_flags(cmd: list[str], *, include_queries: bool = False) -> list[str]:
+        if topic:
+            cmd += ["--topic", topic]
+        if include_queries:
+            for query in queries:
+                cmd += ["--query", query]
+            for keyword in negatives:
+                cmd += ["--negative-keyword", keyword]
+        return cmd
+
+    if steps == ["full"]:
+        cmd = [
+            sys.executable,
+            "-u",
+            str(ROOT / "streaming_overnight_run.py"),
+            "--hours",
+            "18",
+            "--discover-max",
+            str(discover_max),
+            "--process-max",
+            str(count or 2000),
+            "--collect-workers",
+            "3",
+            "--triage-workers",
+            "6",
+            "--extract-workers",
+            "6",
+            "--extract-model",
+            model,
+        ]
+        return [add_common_flags(cmd, include_queries=True)]
+
+    commands: list[list[str]] = []
     if "discover" in steps:
-        max_per_query = max(10, min(100, count))
-        cmd += ["--max-per-query", str(max_per_query)]
-        for query in queries:
-            cmd += ["--query", query]
-        for keyword in negatives:
-            cmd += ["--negative-keyword", keyword]
-    return cmd
+        cmd = [sys.executable, "-u", str(ROOT / "run_agent.py"), "--mode", "discover", "--max", str(discover_max)]
+        commands.append(add_common_flags(cmd, include_queries=True))
+    if "collect" in steps:
+        commands.append([sys.executable, "-u", str(ROOT / "run_agent.py"), "--mode", "collect", "--max", str(count or 20), "--workers", "3"])
+    if "triage" in steps:
+        cmd = [sys.executable, "-u", str(ROOT / "run_agent.py"), "--mode", "triage", "--max", str(count or 2000), "--workers", "6"]
+        commands.append(add_common_flags(cmd))
+    if "extract" in steps:
+        cmd = [sys.executable, "-u", str(ROOT / "run_agent.py"), "--mode", "extract", "--max", str(count or 2000), "--workers", "6"]
+        commands.append(add_common_flags(cmd))
+    if "merge" in steps:
+        commands.append([sys.executable, "-u", str(ROOT / "run_agent.py"), "--mode", "merge"])
+    if "policy" in steps:
+        commands.append([sys.executable, "-u", str(ROOT / "run_agent.py"), "--mode", "policy"])
+    if "report" in steps:
+        commands.append([sys.executable, "-u", str(ROOT / "run_agent.py"), "--mode", "report"])
+    return commands
+
+
+def record_launcher_run(model: str, steps: list[str], count: int, queries: list[str], negatives: list[str]) -> None:
+    LAST_RUN.parent.mkdir(parents=True, exist_ok=True)
+    LAST_RUN.write_text(json.dumps({
+        "model": model,
+        "steps": steps,
+        "max_videos": count,
+        "queries": queries,
+        "negative_keywords": negatives,
+    }, indent=2), encoding="utf-8")
 
 
 def main() -> None:
@@ -350,27 +447,40 @@ def main() -> None:
     steps = choose_steps()
     if not steps:
         raise SystemExit("No steps selected.")
-    count = choose_count() if any(step in steps for step in ["discover", "collect", "analyze"]) else 0
-    analysis_timeout = choose_timeout() if "analyze" in steps else 900
+    count = choose_count() if any(step in steps for step in ["full", "discover", "collect", "triage", "extract"]) else 0
+    analysis_timeout = 900
     _, _, negatives = previous_keywords()
-    queries = choose_keywords(model, negatives) if "discover" in steps else []
+    queries = choose_keywords(model, negatives) if any(step in steps for step in ["full", "discover"]) else []
 
     print("\nStarting run")
     print(f"  Steps: {', '.join(STEP_CHOICES[step] for step in steps)}")
     print(f"  Model: {model}")
     if count:
         print(f"  Max videos: {count}")
-    if "analyze" in steps:
-        print(f"  Analysis timeout: {analysis_timeout}s per segment")
     if queries:
         print(f"  Queries: {'; '.join(queries)}")
-    if negatives and "discover" in steps:
+    if negatives and any(step in steps for step in ["full", "discover"]):
         print(f"  Negative keywords: {', '.join(negatives)}")
     print("")
 
-    cmd = build_command(model, steps, count, queries, negatives, analysis_timeout)
-    completed = subprocess.run(cmd, cwd=ROOT)
-    raise SystemExit(completed.returncode)
+    record_launcher_run(model, steps, count, queries, negatives)
+    if not any(step in steps for step in ["full", "discover", "collect"]):
+        if "triage" in steps:
+            added = seed_queue_from_transcripts("collected")
+        elif "extract" in steps:
+            added = seed_queue_from_transcripts("pending_extract")
+        else:
+            added = 0
+        if added:
+            print(f"Added {added} existing transcript(s) to the classic pipeline queue.")
+
+    env = os.environ.copy()
+    env["EXTRACT_MODEL"] = model
+    for command in build_commands(model, steps, count, queries, negatives, analysis_timeout):
+        completed = subprocess.run(command, cwd=ROOT, env=env)
+        if completed.returncode:
+            raise SystemExit(completed.returncode)
+    raise SystemExit(0)
 
 
 if __name__ == "__main__":

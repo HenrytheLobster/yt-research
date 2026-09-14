@@ -250,9 +250,20 @@ def run_report():
 # ─── stage runners ────────────────────────────────────────────────────────────
 
 def run_discover(args):
-    from youtube_discover import discover, DEFAULT_QUERIES, DEFAULT_CHANNELS
+    from youtube_discover import DEFAULT_CHANNELS, build_queries, discover, load_search_config
+
+    configured = load_search_config()
+    query_override = getattr(args, "query", None)
+    if isinstance(query_override, str):
+        query_override = [query_override]
+    negative_override = getattr(args, "negative_keywords", None)
+    queries = (
+        build_queries({"queries": query_override, "negative_keywords": negative_override or configured.get("negative_keywords", [])})
+        if query_override
+        else build_queries(configured)
+    )
     discover(
-        queries=[args.query] if args.query else DEFAULT_QUERIES,
+        queries=queries,
         channels=DEFAULT_CHANNELS,
         max_per_query=args.max or 20,
         dry_run=getattr(args, "dry_run", False),
@@ -473,7 +484,9 @@ Examples:
     parser.add_argument("--max", type=int, help="Max items per stage")
     parser.add_argument("--workers", type=int, default=None,
                         help="Parallel extraction workers (default 3; use 1 for single-threaded)")
-    parser.add_argument("--query", help="Override discovery queries")
+    parser.add_argument("--query", action="append", help="Override discovery queries; may be repeated")
+    parser.add_argument("--negative-keyword", action="append", dest="negative_keywords",
+                        help="Negative keyword filter for discovery; may be repeated")
     parser.add_argument("--channel", help="Collect directly from a YouTube channel uploads page")
     parser.add_argument("--topic", help="Plain-language research topic for triage/extraction prompts "
                                          "(falls back to RESEARCH_TOPIC env var, then config/search_config.json)")

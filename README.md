@@ -8,8 +8,8 @@ There are two ways to run it:
 
 1. **The interactive launcher** (`./research` or `research_menu.py`) — the
    simplest way in. It asks what you want researched, picks a model, and runs
-   discover → collect → analyze → report as one pass. Good for "research this
-   topic right now."
+   the classic knowledge-base pipeline: discover → collect → triage → extract
+   → merge → policy → report. Good for "research this topic right now."
 2. **The full pipeline** (`run_agent.py`) — an ongoing research program that
    builds a persistent knowledge base and scoring policy across many runs
    over time (discover → collect → triage → extract → merge → policy →
@@ -36,18 +36,25 @@ selected model to generate keyword ideas from a seed topic. Keywords entered
 in the menu apply only to that run; broad negative keywords (junk formats to
 always skip) still come from `config/search_config.json`.
 
+The normal output is the full pipeline report:
+`reports/report_YYYY-MM-DD_HH-MM-SS.md`. That report rolls repeated tactics,
+claims, and patterns into the knowledge base and shows support counts, instead
+of listing transcript notes video by video.
+
 For automation, the worker script accepts direct flags:
 
 ```bash
-.venv/bin/python -u research_run.py --discover --collect --analyze --report \
-    --model gemma4:12b --max-videos 8 \
+.venv/bin/python -u streaming_overnight_run.py --hours 18 \
+    --discover-max 40 --process-max 2000 \
+    --collect-workers 3 --triage-workers 6 --extract-workers 6 \
+    --extract-model gemma4:12b \
     --query "your topic here" --topic "your topic here"
 ```
 
-The run prints progress during each model segment and can be resumed after an
-interruption; completed segments are cached in `data/topic_research/`.
-Collected transcripts are stored in `data/youtube/raw/`, and the
-source-quoted review is written to `reports/topic_research_review.md`.
+The run prints progress during each stage and can be resumed after an
+interruption. Collected transcripts are stored in `data/youtube/raw/`,
+structured extractions in `data/youtube/extracted/`, merged knowledge in
+`data/knowledge/`, and the report in `reports/`.
 
 ---
 
@@ -157,7 +164,7 @@ Or use `manage_search.py` to edit it from the CLI, or just pass `--topic` /
 
 ```
 run_agent.py             ← full-pipeline orchestrator (discover..report, knowledge base + policy)
-research_menu.py         ← interactive launcher for the simpler one-shot pipeline
+research_menu.py         ← interactive launcher for the classic full pipeline
 research_run.py          ← the one-shot pipeline itself (discover/collect/analyze/report)
 research                 ← shell wrapper: ./research runs research_menu.py
 youtube_discover.py      ← finds new videos (queries + channels)

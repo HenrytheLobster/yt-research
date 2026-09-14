@@ -71,6 +71,10 @@ def main():
     parser.add_argument("--extract-model", default=os.environ.get("EXTRACT_MODEL", "grok"))
     parser.add_argument("--cycle-sleep", type=int, default=60)
     parser.add_argument("--topic", help="Plain-language research topic for triage/extraction prompts")
+    parser.add_argument("--query", action="append", dest="queries",
+                        help="Positive discovery query for this run; may be repeated")
+    parser.add_argument("--negative-keyword", action="append", dest="negative_keywords",
+                        help="Negative keyword filter for discovery; may be repeated")
     parser.add_argument("--skip-discover", action="store_true")
     parser.add_argument("--fresh", action="store_true",
                         help="Clear queue, transcripts, extractions, knowledge, and quarantine before running")
@@ -89,8 +93,15 @@ def main():
     print(f"  collect:      {args.collect_workers} workers")
     print(f"  triage:       {args.triage_workers} workers")
     print(f"  extract:      {args.extract_workers} workers via {args.extract_model}")
+    if args.queries:
+        print(f"  queries:      {'; '.join(args.queries)}")
 
-    discover_args = SimpleNamespace(query=None, max=args.discover_max, dry_run=False)
+    discover_args = SimpleNamespace(
+        query=args.queries,
+        negative_keywords=args.negative_keywords,
+        max=args.discover_max,
+        dry_run=False,
+    )
     process_args = SimpleNamespace(max=args.process_max, reset=False, include_low=False)
 
     if args.skip_discover:
